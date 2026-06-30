@@ -5,6 +5,51 @@ $backend = Join-Path $root "backend"
 $sidecar = Join-Path $root "rpa-sidecar"
 $desktop = Join-Path $root "desktop-client"
 
+function Stop-PortProcess {
+    param(
+        [int]$Port,
+        [string]$Name
+    )
+
+    $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    foreach ($connection in $connections) {
+        $ownerPid = [int]$connection.OwningProcess
+        if ($ownerPid -le 0 -or $ownerPid -eq $PID) {
+            continue
+        }
+        try {
+            Stop-Process -Id $ownerPid -Force -ErrorAction Stop
+            Write-Host "Stopped stale $Name process $ownerPid on port $Port"
+        } catch {
+            Write-Host "Could not stop $Name process $ownerPid on port $Port"
+        }
+    }
+}
+
+function Stop-DesktopApp {
+    $electronProcesses = Get-CimInstance Win32_Process -Filter "name = 'electron.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*$desktop*" }
+    foreach ($process in $electronProcesses) {
+        try {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+            Write-Host "Stopped stale desktop app process $($process.ProcessId)"
+        } catch {
+            Write-Host "Could not stop desktop app process $($process.ProcessId)"
+        }
+    }
+
+    $nodeProcesses = Get-CimInstance Win32_Process -Filter "name = 'node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*$desktop*" -and ($_.CommandLine -like "*electron*" -or $_.CommandLine -like "*vite*") }
+    foreach ($process in $nodeProcesses) {
+        try {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+            Write-Host "Stopped stale desktop helper process $($process.ProcessId)"
+        } catch {
+            Write-Host "Could not stop desktop helper process $($process.ProcessId)"
+        }
+    }
+}
+
 function Test-Port {
     param([int]$Port)
     $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
@@ -95,28 +140,45 @@ function Start-DesktopApp {
         return
     }
 
+    $electronExe = Join-Path $desktop "node_modules\electron\dist\electron.exe"
+    if (Test-Path $electronExe) {
+        Start-Process `
+            -FilePath $electronExe `
+            -ArgumentList @(".") `
+            -WorkingDirectory $desktop
+        Write-Host "Started desktop app"
+        return
+    }
+
     $npm = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $npm) {
-        throw "npm was not found in PATH."
+        throw "npm was not found in PATH, and Electron binary was not found. Run npm install in desktop-client."
     }
 
     $npmSource = $npm.Source
     if ($npmSource.EndsWith(".ps1")) {
         Start-Process `
-            -WindowStyle Hidden `
             -FilePath powershell.exe `
             -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $npmSource, "run", "electron") `
-            -WorkingDirectory $desktop
+            -WorkingDirectory $desktop `
+            -RedirectStandardOutput (Join-Path $desktop "electron-main.log") `
+            -RedirectStandardError (Join-Path $desktop "electron-main.err.log")
     } else {
         Start-Process `
-            -WindowStyle Hidden `
             -FilePath $npmSource `
             -ArgumentList @("run", "electron") `
-            -WorkingDirectory $desktop
+            -WorkingDirectory $desktop `
+            -RedirectStandardOutput (Join-Path $desktop "electron-main.log") `
+            -RedirectStandardError (Join-Path $desktop "electron-main.err.log")
     }
 
     Write-Host "Started desktop app"
 }
+
+Stop-DesktopApp
+Stop-PortProcess -Port 8710 -Name "Backend"
+Stop-PortProcess -Port 8720 -Name "RPA sidecar"
+Stop-PortProcess -Port 5173 -Name "Desktop renderer"
 
 Start-UvicornApp `
     -Name "Backend" `

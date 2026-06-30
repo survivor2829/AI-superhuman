@@ -1,5 +1,6 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } = require("electron");
 const { spawn } = require("child_process");
+const fs = require("fs");
 const http = require("http");
 const path = require("path");
 
@@ -12,11 +13,68 @@ const preloadPath = path.join(__dirname, "preload.cjs");
 const BACKEND_URL = "http://127.0.0.1:8710";
 const SIDECAR_URL = "http://127.0.0.1:8720";
 const RENDERER_URL = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173";
+const electronLogPath = path.join(desktopDir, "electron-main.log");
 
 let mainWindow = null;
 let floatingWindow = null;
 let tray = null;
 const childProcesses = [];
+
+function appendMainLog(level, message, detail = "") {
+  const line = `[${new Date().toISOString()}] ${level} ${message}${detail ? ` ${detail}` : ""}\n`;
+  try {
+    fs.appendFileSync(electronLogPath, line, "utf8");
+  } catch {
+    // Logging must never take down the desktop shell.
+  }
+}
+
+function isBrokenPipe(error) {
+  return error && (error.code === "EPIPE" || String(error.message || "").includes("EPIPE"));
+}
+
+for (const stream of [process.stdout, process.stderr]) {
+  try {
+    stream.on("error", (error) => {
+      if (!isBrokenPipe(error)) appendMainLog("stream-error", error.message || String(error));
+    });
+  } catch {
+    // Some Electron launches do not expose normal node streams.
+  }
+}
+
+process.on("uncaughtException", (error) => {
+  if (isBrokenPipe(error)) {
+    appendMainLog("ignored", "EPIPE from detached console stream");
+    return;
+  }
+  appendMainLog("uncaughtException", error.stack || String(error));
+});
+
+process.on("unhandledRejection", (reason) => {
+  appendMainLog("unhandledRejection", reason && reason.stack ? reason.stack : String(reason));
+});
+
+function errorResponse(error, fallbackMessage = "本地桌面服务暂时不可用") {
+  const message = error && error.message ? error.message : String(error || fallbackMessage);
+  appendMainLog("ipc-error", message);
+  return {
+    ok: false,
+    success: false,
+    message: fallbackMessage,
+    error: message
+  };
+}
+
+function safeHandle(channel, handler, fallbackMessage) {
+  ipcMain.handle(channel, async (...args) => {
+    try {
+      return await handler(...args);
+    } catch (error) {
+      return errorResponse(error, fallbackMessage);
+    }
+  });
+}
 
 function httpRequest(method, url, body) {
   return new Promise((resolve, reject) => {
@@ -73,7 +131,6 @@ async function waitForUrl(url, seconds = 25) {
 }
 
 function spawnService(name, command, args, cwd, outLog, errLog) {
-  const fs = require("fs");
   const out = fs.openSync(outLog, "a");
   const err = fs.openSync(errLog, "a");
   const child = spawn(command, args, {
@@ -83,9 +140,14 @@ function spawnService(name, command, args, cwd, outLog, errLog) {
     shell: false
   });
   childProcesses.push({ name, child });
+  appendMainLog("spawn", `${name} ${command} ${args.join(" ")}`);
   child.on("exit", () => {
-    fs.closeSync(out);
-    fs.closeSync(err);
+    try {
+      fs.closeSync(out);
+      fs.closeSync(err);
+    } catch {
+      // Ignore log descriptor cleanup races.
+    }
   });
 }
 
@@ -204,16 +266,22 @@ async function taskControl(action) {
   return result;
 }
 
-ipcMain.handle("app:start-services", async () => {
+safeHandle("app:start-services", async () => {
   await ensureServices();
   return { ok: true };
-});
-ipcMain.handle("app:enter-run-mode", () => enterRunMode());
-ipcMain.handle("app:exit-run-mode", () => exitRunMode());
-ipcMain.handle("task:pause", () => taskControl("pause"));
-ipcMain.handle("task:resume", () => taskControl("resume"));
-ipcMain.handle("task:stop", () => taskControl("stop"));
-ipcMain.handle("task:status", () => httpRequest("GET", `${BACKEND_URL}/tasks/current`));
+}, "本地服务启动失败");
+safeHandle("app:enter-run-mode", () => enterRunMode(), "微信专用运行模式启动失败");
+safeHandle("app:exit-run-mode", () => exitRunMode(), "退出运行模式失败");
+safeHandle("task:pause", () => taskControl("pause"), "暂停任务失败");
+safeHandle("task:resume", () => taskControl("resume"), "继续任务失败");
+safeHandle("task:stop", () => taskControl("stop"), "停止任务失败");
+safeHandle("task:status", async () => {
+  const status = await httpRequest("GET", `${BACKEND_URL}/tasks/current`);
+  if (status && status.error === "not_found") {
+    throw new Error("backend_endpoint_missing:/tasks/current");
+  }
+  return status;
+}, "悬浮窗状态接口暂不可用，请重启本地服务");
 
 app.whenReady().then(async () => {
   await ensureServices();

@@ -812,6 +812,28 @@ class RealAutomationDriver:
             return False, f"win32_unavailable:{type(exc).__name__}"
 
         attached_threads: list[int] = []
+        last_error = ""
+
+        def unlock_foreground_once() -> None:
+            try:
+                ctypes.windll.user32.AllowSetForegroundWindow(-1)
+            except Exception:
+                pass
+            try:
+                win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+                time.sleep(0.03)
+                win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+            except Exception:
+                pass
+
+        def foreground_matches() -> bool:
+            try:
+                foreground_hwnd = int(win32gui.GetForegroundWindow())
+                _, foreground_pid = win32process.GetWindowThreadProcessId(foreground_hwnd)
+                return foreground_hwnd == status.hwnd or (status.pid is not None and int(foreground_pid) == status.pid)
+            except Exception:
+                return False
+
         try:
             current_thread = win32api.GetCurrentThreadId()
             foreground_hwnd = int(win32gui.GetForegroundWindow())
@@ -826,17 +848,38 @@ class RealAutomationDriver:
                         attached_threads.append(thread_id)
                     except Exception:
                         pass
-            win32gui.ShowWindowAsync(status.hwnd, win32con.SW_RESTORE)
-            time.sleep(0.1)
-            win32gui.BringWindowToTop(status.hwnd)
-            try:
-                flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW
-                win32gui.SetWindowPos(status.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
-                win32gui.SetWindowPos(status.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, flags)
-            except Exception:
-                pass
-            time.sleep(0.15)
-            win32gui.SetForegroundWindow(status.hwnd)
+            for attempt in range(3):
+                try:
+                    win32gui.ShowWindowAsync(status.hwnd, win32con.SW_RESTORE)
+                    time.sleep(0.1)
+                    win32gui.BringWindowToTop(status.hwnd)
+                    flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW
+                    win32gui.SetWindowPos(status.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
+                    win32gui.SetWindowPos(status.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+                except Exception as exc:
+                    last_error = f"raise_window_failed:{type(exc).__name__}"
+                unlock_foreground_once()
+                try:
+                    win32gui.SetForegroundWindow(status.hwnd)
+                except Exception as exc:
+                    last_error = f"foreground_set_failed:{type(exc).__name__}"
+                try:
+                    win32gui.SetActiveWindow(status.hwnd)
+                except Exception:
+                    pass
+                try:
+                    win32gui.SetFocus(status.hwnd)
+                except Exception:
+                    pass
+                try:
+                    ctypes.windll.user32.SwitchToThisWindow(int(status.hwnd), True)
+                except Exception:
+                    pass
+                deadline = time.time() + (0.7 if attempt < 2 else 1.2)
+                while time.time() < deadline:
+                    if foreground_matches():
+                        return True, "activated"
+                    time.sleep(0.08)
         except Exception as exc:
             return False, f"foreground_set_failed:{type(exc).__name__}"
         finally:
@@ -847,17 +890,13 @@ class RealAutomationDriver:
             except Exception:
                 pass
 
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            try:
-                foreground_hwnd = int(win32gui.GetForegroundWindow())
-                _, foreground_pid = win32process.GetWindowThreadProcessId(foreground_hwnd)
-                if foreground_hwnd == status.hwnd or (status.pid is not None and int(foreground_pid) == status.pid):
-                    return True, "activated"
-            except Exception:
-                pass
-            time.sleep(0.1)
-        return False, "foreground_not_changed"
+        try:
+            foreground_title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+        except Exception:
+            foreground_title = ""
+        if last_error:
+            return False, f"foreground_not_changed:{last_error}:current={foreground_title}"
+        return False, f"foreground_not_changed:current={foreground_title}"
 
     @staticmethod
     def _probe_payload(probe: WindowProbeStatus) -> dict[str, object]:
