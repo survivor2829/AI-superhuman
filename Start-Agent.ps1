@@ -87,6 +87,37 @@ function Start-DesktopPreview {
     Write-Host "Started desktop preview on port 5173"
 }
 
+function Start-DesktopApp {
+    $existing = Get-CimInstance Win32_Process -Filter "name = 'electron.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*$desktop*" }
+    if ($existing) {
+        Write-Host "Desktop app already running"
+        return
+    }
+
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npm) {
+        throw "npm was not found in PATH."
+    }
+
+    $npmSource = $npm.Source
+    if ($npmSource.EndsWith(".ps1")) {
+        Start-Process `
+            -WindowStyle Hidden `
+            -FilePath powershell.exe `
+            -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $npmSource, "run", "electron") `
+            -WorkingDirectory $desktop
+    } else {
+        Start-Process `
+            -WindowStyle Hidden `
+            -FilePath $npmSource `
+            -ArgumentList @("run", "electron") `
+            -WorkingDirectory $desktop
+    }
+
+    Write-Host "Started desktop app"
+}
+
 Start-UvicornApp `
     -Name "Backend" `
     -WorkingDirectory $backend `
@@ -102,6 +133,7 @@ Start-UvicornApp `
     -ErrLog (Join-Path $sidecar "sidecar.err.log")
 
 Start-DesktopPreview
+Start-DesktopApp
 
 $backendOk = Wait-Http -Url "http://127.0.0.1:8710/health"
 $sidecarOk = Wait-Http -Url "http://127.0.0.1:8720/health"
@@ -112,5 +144,6 @@ Write-Host "Agent MVP status:"
 Write-Host "Backend       http://127.0.0.1:8710/docs      $backendOk"
 Write-Host "RPA sidecar   http://127.0.0.1:8720/docs      $sidecarOk"
 Write-Host "Desktop       http://127.0.0.1:5173           $desktopOk"
+Write-Host "Desktop app   Electron window                 started"
 Write-Host ""
 Write-Host "Logs are written under backend, rpa-sidecar, and desktop-client."

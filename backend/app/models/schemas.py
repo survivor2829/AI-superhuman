@@ -80,6 +80,7 @@ class AutomationPlan(BaseModel):
 class TaskRun(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     action_type: str
+    target_id: str = ""
     status: TaskStatus = TaskStatus.pending
     step: str = "created"
     progress: int = 0

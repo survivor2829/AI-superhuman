@@ -19,7 +19,7 @@ import {
   UsersRound
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AuditLog, Contact, EvidenceFile, Health, PromptImportResponse, SendDriverProbe, Settings, TaskEvent, TaskRun, TouchPreview, WindowProbe } from "./lib/api";
+import { api, AuditLog, Contact, CurrentTaskStatus, EvidenceFile, Health, PromptImportResponse, SendDriverProbe, Settings, TaskEvent, TaskRun, TouchPreview, WindowProbe } from "./lib/api";
 
 type ViewId = "home" | "prompt" | "contacts" | "send" | "results" | "settings";
 type ServiceState = "online" | "offline" | "checking";
@@ -118,6 +118,7 @@ export function App() {
   const [sendDriverProbe, setSendDriverProbe] = useState<SendDriverProbe | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [tasks, setTasks] = useState<TaskRun[]>([]);
+  const [currentTask, setCurrentTask] = useState<CurrentTaskStatus | null>(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [audits, setAudits] = useState<AuditLog[]>([]);
   const [evidence, setEvidence] = useState<EvidenceFile[]>([]);
@@ -141,6 +142,7 @@ export function App() {
       api.sendDriverProbe().then(setSendDriverProbe).catch(() => setSendDriverProbe(null)),
       api.contacts().then(setContacts).catch(() => setContacts([])),
       api.tasks().then(setTasks).catch(() => setTasks([])),
+      api.currentTask().then(setCurrentTask).catch(() => setCurrentTask(null)),
       api.taskEvents().then(setEvents).catch(() => setEvents([])),
       api.audits().then(setAudits).catch(() => setAudits([])),
       api.evidence().then(setEvidence).catch(() => setEvidence([]))
@@ -228,7 +230,19 @@ export function App() {
     setActiveView("send");
   });
 
-  const runSmallBatch = async () => runAction("run-small-batch", async () => {
+  const runTaskControl = async (action: "pause" | "resume" | "stop") => runAction(`task-${action}`, async () => {
+    if (window.agentDesktop) {
+      if (action === "pause") await window.agentDesktop.pauseTask();
+      if (action === "resume") await window.agentDesktop.resumeTask();
+      if (action === "stop") await window.agentDesktop.stopTask();
+    } else {
+      await api.controlTask(action);
+    }
+    setNotice(action === "pause" ? "已暂停当前任务" : action === "resume" ? "已继续当前任务" : "已停止当前任务");
+    await refresh();
+  });
+
+  const runSmallBatchLegacy = async () => runAction("run-small-batch-legacy", async () => {
     if (touchableContacts.length === 0) {
       setNotice("请先静默同步通讯录，或检查是否已全部移除");
       return;
@@ -246,6 +260,40 @@ export function App() {
     setNotice(`本次处理 ${result.ran} 个客户，当前通道上限 ${result.allowed_limit ?? runLimit} 人`);
     await refresh();
     setActiveView("results");
+  });
+
+  const runSmallBatch = async () => runAction("run-small-batch", async () => {
+    if (touchableContacts.length === 0) {
+      setNotice("请先静默同步通讯录，或检查是否已全部移除");
+      return;
+    }
+    if (!canRunControlledSend) {
+      setNotice(sendDriverProbe?.message || "请先校准微信窗口，未执行发送");
+      setActiveView("send");
+      return;
+    }
+    const nextPlanId = await getOrCreatePlanId();
+    const previewResult = await api.previewTouchPlan(nextPlanId);
+    setPreview(previewResult);
+    const runLimit = Math.max(1, Math.min(5, maxBatchSize || 1));
+    let electronRunMode = false;
+    try {
+      setNotice("正在进入微信专用运行模式，请不要操作鼠标键盘");
+      const prepareResult = window.agentDesktop ? await window.agentDesktop.enterRunMode() : await api.prepareDedicatedDesktop();
+      electronRunMode = Boolean(window.agentDesktop);
+      if (prepareResult.success === false) {
+        setNotice(String(prepareResult.message || "微信窗口没有准备好，未执行发送"));
+        return;
+      }
+      const result = await api.runTouchPlan(nextPlanId, runLimit);
+      setNotice(`本次处理 ${result.ran} 个客户，当前通道上限 ${result.allowed_limit ?? runLimit} 人`);
+      await refresh();
+      setActiveView("results");
+    } finally {
+      if (electronRunMode) {
+        await window.agentDesktop?.exitRunMode();
+      }
+    }
   });
 
   useEffect(() => {
@@ -336,7 +384,9 @@ export function App() {
           <button className="primary-button" onClick={() => void preparePreview()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成预览</button>
           <button className="primary-button" onClick={() => void calibrateWechatWindow()} disabled={busyAction !== null || !wechatReady}><Radar size={16} />校准微信窗口</button>
           <button className="danger-button" onClick={() => void runSmallBatch()} disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend}><Send size={16} />{canAutoSend ? "开始小批量" : canRunControlledSend ? "开始 1 人验证" : "待校准"}</button>
-          <button className="ghost-button"><PauseCircle size={16} />暂停</button>
+          <button className="ghost-button" onClick={() => void runTaskControl(currentTask?.paused ? "resume" : "pause")} disabled={busyAction !== null}>
+            <PauseCircle size={16} />{currentTask?.paused ? "继续" : "暂停"}
+          </button>
           <span className="notice">{notice}</span>
         </section>
 

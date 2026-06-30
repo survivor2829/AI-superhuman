@@ -85,6 +85,35 @@ def test_window_probe_detects_wechat_qt_main_window_even_when_win32_visibility_i
     assert status.rect == (14, 23, 1356, 994)
 
 
+def test_window_probe_reports_minimized_window_metadata():
+    driver = WindowProbeDriver(
+        process_name="Weixin",
+        window_title="寰俊",
+        process_provider=lambda: [
+            {
+                "name": "Weixin",
+                "pid": 34888,
+                "path": r"F:\寰俊\Weixin\Weixin.exe",
+                "title": "寰俊",
+                "class_name": "Qt51514QWindowIcon",
+                "hwnd": 200,
+                "visible": True,
+                "rect": (-32000, -32000, -31763, -31961),
+                "is_minimized": True,
+                "show_cmd": 2,
+                "foreground_title": "Codex",
+            }
+        ],
+    )
+
+    status = driver.probe()
+
+    assert status.detected is True
+    assert status.is_minimized is True
+    assert status.show_cmd == 2
+    assert status.foreground_title == "Codex"
+
+
 def test_evidence_recorder_writes_placeholder_when_capture_unavailable(tmp_path):
     recorder = EvidenceRecorder(tmp_path, screenshot_provider=lambda path: False)
 
@@ -192,6 +221,38 @@ def test_real_driver_blocks_send_when_wechat_window_cannot_be_activated(tmp_path
     assert result.message == "blocked_window_not_foreground"
     assert result.failure_reason == "foreground_not_changed"
     assert result.evidence["activation_failed"]
+
+
+def test_prepare_dedicated_desktop_blocks_when_window_cannot_be_activated(tmp_path, monkeypatch):
+    probe = WindowProbeDriver(
+        process_name="Weixin",
+        window_title="寰俊",
+        process_provider=lambda: [
+            {
+                "name": "Weixin",
+                "pid": 34888,
+                "path": r"F:\寰俊\Weixin\Weixin.exe",
+                "title": "寰俊",
+                "class_name": "Qt51514QWindowIcon",
+                "hwnd": 200,
+                "visible": True,
+                "rect": (0, 0, 1280, 900),
+            }
+        ],
+    )
+    driver = RealAutomationDriver(
+        probe_driver=probe,
+        evidence_recorder=EvidenceRecorder(tmp_path, screenshot_provider=lambda path: False),
+        window_activator=lambda status: (False, "foreground_not_changed"),
+    )
+    monkeypatch.setattr(driver, "normalize_window", lambda: {"success": True, "rect": (0, 0, 1280, 900)})
+
+    result = driver.prepare_dedicated_desktop()
+
+    assert result["success"] is False
+    assert result["message"] == "wechat_window_not_foreground"
+    assert result["activation_reason"] == "foreground_not_changed"
+    assert result["evidence"]["activation_failed"]
 
 
 def test_search_result_inspector_blocks_wrong_search_surface():

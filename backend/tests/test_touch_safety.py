@@ -259,3 +259,38 @@ def test_touch_run_blocks_before_creating_send_tasks_when_controlled_driver_unca
     assert response["message"] == "请先校准微信窗口，未执行发送"
     assert sidecar_calls == []
     assert store.list_tasks() == []
+
+
+def test_current_task_returns_customer_stage_and_friendly_message(monkeypatch, tmp_path):
+    import app.main as main
+
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    monkeypatch.setattr(main, "store", store)
+
+    task = store.create_task(action_type="message.send", target_id="wxid_customer", status=TaskStatus.preflight)
+    store.update_task(task.id, status=TaskStatus.blocked, step="blocked", progress=100, error="blocked_window_not_foreground")
+    store.add_task_event(task_id=task.id, status=TaskStatus.blocked, message="blocked_window_not_foreground")
+
+    result = main.current_task()
+
+    assert result["stage"] == "blocked"
+    assert result["stage_label"] == "已拦截"
+    assert result["customer"] == "wxid_customer"
+    assert result["message"] == "微信没有切到前台，已停止发送"
+
+
+def test_task_control_pause_marks_running_task_paused(monkeypatch, tmp_path):
+    import app.main as main
+
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    monkeypatch.setattr(main, "store", store)
+    main.runtime_control_state.update({"paused": False, "stopped": False, "last_action": "", "updated_at": None})
+
+    store.create_task(action_type="message.send", target_id="wxid_customer", status=TaskStatus.running)
+    response = main.control_task(main.TaskControlRequest(action="pause"))
+
+    assert response["ok"] is True
+    assert response["current"]["paused"] is True
+    assert store.list_tasks()[0].status == TaskStatus.paused

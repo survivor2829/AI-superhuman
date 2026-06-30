@@ -30,7 +30,18 @@ git submodule update --init --recursive
 ```
 
 2. Keep real keys in `.env`; `.env.example` is intentionally placeholder-only.
-3. Start the backend:
+3. Start the desktop app. This launches the backend, RPA sidecar, local renderer, Electron main window, tray, and floating status window support:
+
+```powershell
+cd C:\Users\28293\Desktop\Agent
+.\Start-Agent.ps1
+```
+
+During a one-contact verification run, the main window hides to the tray and a small floating status window stays on the desktop while WeChat is prepared for the controlled run.
+
+For debugging, each service can still be started by hand.
+
+Backend:
 
 ```powershell
 cd C:\Users\28293\Desktop\Agent\backend
@@ -38,7 +49,7 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8710
 ```
 
-4. Start the RPA sidecar:
+RPA sidecar:
 
 ```powershell
 cd C:\Users\28293\Desktop\Agent\rpa-sidecar
@@ -46,7 +57,7 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8720
 ```
 
-5. Start the desktop client:
+React renderer:
 
 ```powershell
 cd C:\Users\28293\Desktop\Agent\desktop-client
@@ -54,11 +65,11 @@ npm install
 npm run dev
 ```
 
-Or run all three services:
+Electron shell only:
 
 ```powershell
-cd C:\Users\28293\Desktop\Agent
-.\Start-Agent.ps1
+cd C:\Users\28293\Desktop\Agent\desktop-client
+npm run electron
 ```
 
 ## Verification

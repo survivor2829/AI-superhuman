@@ -52,6 +52,9 @@ class WindowProbeStatus:
     rect: tuple[int, int, int, int] | None = None
     foreground_match: bool = False
     activation_status: str = ""
+    is_minimized: bool = False
+    show_cmd: int | None = None
+    foreground_title: str = ""
 
 
 @dataclass(frozen=True)
@@ -290,6 +293,9 @@ class WindowProbeDriver:
                 rect=self._rect_tuple(process.get("rect")),
                 foreground_match=bool(process.get("foreground_match")),
                 activation_status="already_foreground" if process.get("foreground_match") else "",
+                is_minimized=bool(process.get("is_minimized")),
+                show_cmd=self._optional_int(process.get("show_cmd")),
+                foreground_title=str(process.get("foreground_title") or ""),
             )
         if matched_process is not None:
             return WindowProbeStatus(
@@ -302,6 +308,9 @@ class WindowProbeDriver:
                 class_name=str(matched_process.get("class_name") or ""),
                 rect=self._rect_tuple(matched_process.get("rect")),
                 foreground_match=bool(matched_process.get("foreground_match")),
+                is_minimized=bool(matched_process.get("is_minimized")),
+                show_cmd=self._optional_int(matched_process.get("show_cmd")),
+                foreground_title=str(matched_process.get("foreground_title") or ""),
                 reason="wechat_process_found_but_main_window_hidden",
             )
         return WindowProbeStatus(
@@ -400,6 +409,11 @@ class WindowProbeDriver:
             foreground_pid = int(raw_foreground_pid)
         except Exception:
             pass
+        foreground_title = ""
+        try:
+            foreground_title = win32gui.GetWindowText(foreground_hwnd) if foreground_hwnd else ""
+        except Exception:
+            foreground_title = ""
 
         def collect(hwnd: int, _: int) -> None:
             try:
@@ -408,6 +422,7 @@ class WindowProbeDriver:
                 title = win32gui.GetWindowText(hwnd)
                 class_name = win32gui.GetClassName(hwnd)
                 rect = tuple(int(item) for item in win32gui.GetWindowRect(hwnd))
+                placement = win32gui.GetWindowPlacement(hwnd)
                 row = {
                     **processes.get(pid, {"name": "", "pid": pid, "path": ""}),
                     "title": title,
@@ -417,6 +432,9 @@ class WindowProbeDriver:
                     "enabled": bool(win32gui.IsWindowEnabled(hwnd)),
                     "rect": rect,
                     "foreground_match": int(hwnd) == foreground_hwnd or pid == foreground_pid,
+                    "is_minimized": bool(win32gui.IsIconic(hwnd)),
+                    "show_cmd": int(placement[1]) if isinstance(placement, tuple) and len(placement) > 1 else None,
+                    "foreground_title": foreground_title,
                 }
             except Exception:
                 return
@@ -502,6 +520,9 @@ class RealAutomationDriver:
             "rect": probe.rect,
             "foreground_match": probe.foreground_match,
             "activation_status": probe.activation_status,
+            "is_minimized": probe.is_minimized,
+            "show_cmd": probe.show_cmd,
+            "foreground_title": probe.foreground_title,
         }
 
     def local_accounts(self) -> list[dict[str, Any]]:
@@ -537,6 +558,31 @@ class RealAutomationDriver:
             "class_name": refreshed.class_name,
             "foreground_match": refreshed.foreground_match,
             "evidence": {"window_normalized" if success else "window_normalize_failed": evidence.path},
+        }
+
+    def prepare_dedicated_desktop(self) -> dict[str, object]:
+        probe = self.probe_driver.probe()
+        if not probe.detected or not probe.hwnd:
+            evidence = self.evidence_recorder.capture("desktop_prepare_failed")
+            return {
+                "success": False,
+                "message": probe.reason or "wechat_window_not_found",
+                "probe": self._probe_payload(probe),
+                "evidence": {"desktop_prepare_failed": evidence.path},
+            }
+        normalized = self.normalize_window()
+        refreshed = self.probe_driver.probe()
+        activated, reason = self.window_activator(refreshed)
+        final_probe = self.probe_driver.probe()
+        success = activated and final_probe.foreground_match
+        evidence = self.evidence_recorder.capture("desktop_prepared" if success else "activation_failed")
+        return {
+            "success": success,
+            "message": "dedicated_desktop_ready" if success else "wechat_window_not_foreground",
+            "activation_reason": reason,
+            "normalize": normalized,
+            "probe": self._probe_payload(final_probe),
+            "evidence": {"desktop_prepared" if success else "activation_failed": evidence.path},
         }
 
     def calibrate_send_driver(self) -> dict[str, object]:
@@ -761,15 +807,45 @@ class RealAutomationDriver:
             import win32con
             import win32gui
             import win32process
+            import win32api
         except Exception as exc:
             return False, f"win32_unavailable:{type(exc).__name__}"
 
+        attached_threads: list[int] = []
         try:
-            win32gui.ShowWindow(status.hwnd, win32con.SW_RESTORE)
+            current_thread = win32api.GetCurrentThreadId()
+            foreground_hwnd = int(win32gui.GetForegroundWindow())
+            foreground_thread = 0
+            if foreground_hwnd:
+                foreground_thread, _ = win32process.GetWindowThreadProcessId(foreground_hwnd)
+            target_thread, _ = win32process.GetWindowThreadProcessId(status.hwnd)
+            for thread_id in {int(foreground_thread), int(target_thread)}:
+                if thread_id and thread_id != current_thread:
+                    try:
+                        win32process.AttachThreadInput(current_thread, thread_id, True)
+                        attached_threads.append(thread_id)
+                    except Exception:
+                        pass
+            win32gui.ShowWindowAsync(status.hwnd, win32con.SW_RESTORE)
+            time.sleep(0.1)
+            win32gui.BringWindowToTop(status.hwnd)
+            try:
+                flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW
+                win32gui.SetWindowPos(status.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
+                win32gui.SetWindowPos(status.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+            except Exception:
+                pass
             time.sleep(0.15)
             win32gui.SetForegroundWindow(status.hwnd)
         except Exception as exc:
             return False, f"foreground_set_failed:{type(exc).__name__}"
+        finally:
+            try:
+                current_thread = win32api.GetCurrentThreadId()
+                for thread_id in attached_threads:
+                    win32process.AttachThreadInput(current_thread, thread_id, False)
+            except Exception:
+                pass
 
         deadline = time.time() + 2.0
         while time.time() < deadline:
@@ -782,6 +858,25 @@ class RealAutomationDriver:
                 pass
             time.sleep(0.1)
         return False, "foreground_not_changed"
+
+    @staticmethod
+    def _probe_payload(probe: WindowProbeStatus) -> dict[str, object]:
+        return {
+            "detected": probe.detected,
+            "process_name": probe.process_name,
+            "window_title": probe.window_title,
+            "pid": probe.pid,
+            "path": probe.path,
+            "reason": probe.reason,
+            "hwnd": probe.hwnd,
+            "class_name": probe.class_name,
+            "rect": probe.rect,
+            "foreground_match": probe.foreground_match,
+            "activation_status": probe.activation_status,
+            "is_minimized": probe.is_minimized,
+            "show_cmd": probe.show_cmd,
+            "foreground_title": probe.foreground_title,
+        }
 
     def _normalize_window(self, status: WindowProbeStatus) -> tuple[bool, str]:
         ensure_process_dpi_awareness()

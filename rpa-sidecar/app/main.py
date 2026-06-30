@@ -42,6 +42,11 @@ def normalize_window() -> dict[str, object]:
     return driver.normalize_window()
 
 
+@app.post("/wechat/window/prepare-dedicated-desktop")
+def prepare_dedicated_desktop() -> dict[str, object]:
+    return driver.prepare_dedicated_desktop()
+
+
 @app.get("/send/driver/probe")
 def send_driver_probe() -> dict[str, object]:
     return driver.send_driver_probe()

@@ -23,6 +23,13 @@ export type WindowProbe = {
   pid?: number;
   path?: string;
   reason?: string;
+  hwnd?: number;
+  class_name?: string;
+  rect?: [number, number, number, number];
+  foreground_match?: boolean;
+  is_minimized?: boolean;
+  show_cmd?: number;
+  foreground_title?: string;
 };
 
 export type SendDriverProbe = {
@@ -111,11 +118,43 @@ export type ContactSyncResponse = {
 export type TaskRun = {
   id: string;
   action_type: string;
+  target_id?: string;
   status: string;
   step: string;
   progress: number;
   error?: string;
 };
+
+export type CurrentTaskStatus = {
+  active: boolean;
+  stage: string;
+  stage_label: string;
+  customer: string;
+  progress: number;
+  message: string;
+  can_pause: boolean;
+  paused: boolean;
+  stopped: boolean;
+  task?: TaskRun;
+  last_event?: TaskEvent | null;
+};
+
+export type DesktopBridge = {
+  startServices: () => Promise<{ ok: boolean }>;
+  enterRunMode: () => Promise<Record<string, unknown>>;
+  exitRunMode: () => Promise<{ ok: boolean }>;
+  pauseTask: () => Promise<Record<string, unknown>>;
+  resumeTask: () => Promise<Record<string, unknown>>;
+  stopTask: () => Promise<Record<string, unknown>>;
+  getTaskStatus: () => Promise<CurrentTaskStatus>;
+  onTaskRefresh: (callback: () => void) => () => void;
+};
+
+declare global {
+  interface Window {
+    agentDesktop?: DesktopBridge;
+  }
+}
 
 export type TaskEvent = {
   id: string;
@@ -211,6 +250,7 @@ export const api = {
   settings: () => getJson<Settings>(`${BACKEND_URL}/settings`),
   probe: () => getJson<WindowProbe>(`${BACKEND_URL}/wechat/window/probe`),
   normalizeWindow: () => postJson<Record<string, unknown>>(`${BACKEND_URL}/wechat/window/normalize`, {}),
+  prepareDedicatedDesktop: () => postJson<Record<string, unknown>>(`${BACKEND_URL}/wechat/window/prepare-dedicated-desktop`, {}),
   sendDriverProbe: () => getJson<SendDriverProbe>(`${BACKEND_URL}/send/driver/probe`),
   calibrateSendDriver: () => postJson<Record<string, unknown>>(`${BACKEND_URL}/send/driver/calibrate`, {}),
   localAccounts: () => getJson<{ accounts: LocalWechatAccount[] }>(`${BACKEND_URL}/wechat/accounts/local`),
@@ -233,6 +273,8 @@ export const api = {
   previewTouchPlan: (planId: string) => postJson<TouchPreview>(`${BACKEND_URL}/touch/plans/${planId}/preview`, { limit: 5, direct_send: true }),
   runTouchPlan: (planId: string, limit = 5) => postJson<{ ran: number; allowed_limit?: number; requested_limit?: number; results: unknown[] }>(`${BACKEND_URL}/touch/plans/${planId}/run`, { limit, direct_send: true }),
   tasks: () => getJson<TaskRun[]>(`${BACKEND_URL}/tasks`),
+  currentTask: () => getJson<CurrentTaskStatus>(`${BACKEND_URL}/tasks/current`),
+  controlTask: (action: "pause" | "resume" | "stop") => postJson<Record<string, unknown>>(`${BACKEND_URL}/tasks/control`, { action }),
   taskEvents: () => getJson<TaskEvent[]>(`${BACKEND_URL}/tasks/events`),
   audits: () => getJson<AuditLog[]>(`${BACKEND_URL}/audit/logs`),
   evidence: () => getJson<EvidenceFile[]>(`${BACKEND_URL}/evidence/files`)

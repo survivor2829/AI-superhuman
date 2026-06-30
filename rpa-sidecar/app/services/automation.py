@@ -65,6 +65,9 @@ class WeixinAutomationDriver:
             "rect": status.rect,
             "foreground_match": status.foreground_match,
             "activation_status": status.activation_status,
+            "is_minimized": status.is_minimized,
+            "show_cmd": status.show_cmd,
+            "foreground_title": status.foreground_title,
         }
 
     def send_driver_probe(self) -> dict[str, object]:
@@ -83,6 +86,17 @@ class WeixinAutomationDriver:
             self.real_driver.controlled_screen_state.calibrated_at = datetime.now(UTC).isoformat()
             return {"success": True, "calibrated": True, "message": "dry_run_calibrated", "send_driver": self.send_driver_probe()}
         return self.real_driver.calibrate_send_driver()
+
+    def prepare_dedicated_desktop(self) -> dict[str, object]:
+        if self.dry_run:
+            return {
+                "success": True,
+                "message": "dry_run_dedicated_desktop_ready",
+                "dry_run": True,
+                "probe": self.probe(),
+                "evidence": {},
+            }
+        return self.real_driver.prepare_dedicated_desktop()
 
     def local_accounts(self) -> list[dict[str, object]]:
         if self.dry_run:

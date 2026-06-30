@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>运行状态</title>
+    <style>
+      :root {
+        color: #f8fafc;
+        background: #172033;
+        font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      .card {
+        width: 100vw;
+        height: 100vh;
+        padding: 14px;
+        background: #172033;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        -webkit-app-region: drag;
+      }
+      .top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+      }
+      .label {
+        color: #a9b8d0;
+        font-size: 12px;
+      }
+      .stage {
+        display: block;
+        margin-top: 4px;
+        font-size: 20px;
+        font-weight: 700;
+      }
+      .badge {
+        border-radius: 999px;
+        padding: 5px 9px;
+        color: #0b1220;
+        background: #9ee7bd;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .meta {
+        display: grid;
+        grid-template-columns: 58px minmax(0, 1fr);
+        gap: 8px 10px;
+        margin: 14px 0 12px;
+        font-size: 13px;
+      }
+      .meta span {
+        color: #a9b8d0;
+      }
+      .meta strong {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .progress {
+        height: 6px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.12);
+        overflow: hidden;
+      }
+      .bar {
+        height: 100%;
+        width: 0%;
+        background: #63e6be;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+        -webkit-app-region: no-drag;
+      }
+      button {
+        flex: 1;
+        height: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 7px;
+        color: #f8fafc;
+        background: rgba(255, 255, 255, 0.08);
+        font: inherit;
+        cursor: pointer;
+      }
+      button.danger {
+        background: #b42318;
+        border-color: #b42318;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="card">
+      <div class="top">
+        <div>
+          <span class="label">当前阶段</span>
+          <strong id="stage" class="stage">准备中</strong>
+        </div>
+        <span id="badge" class="badge">运行中</span>
+      </div>
+      <div class="meta">
+        <span>客户</span><strong id="customer">-</strong>
+        <span>说明</span><strong id="message">正在准备微信窗口</strong>
+      </div>
+      <div class="progress"><div id="bar" class="bar"></div></div>
+      <div class="actions">
+        <button id="pause">暂停</button>
+        <button id="resume">继续</button>
+        <button id="stop" class="danger">停止</button>
+      </div>
+    </section>
+    <script>
+      const stage = document.getElementById("stage");
+      const badge = document.getElementById("badge");
+      const customer = document.getElementById("customer");
+      const message = document.getElementById("message");
+      const bar = document.getElementById("bar");
+
+      async function refresh() {
+        try {
+          const status = await window.agentDesktop.getTaskStatus();
+          stage.textContent = status.stage_label || "准备中";
+          badge.textContent = status.paused ? "已暂停" : status.active ? "运行中" : "待命";
+          customer.textContent = status.customer || "-";
+          message.textContent = status.message || "等待任务";
+          bar.style.width = `${Math.max(0, Math.min(100, Number(status.progress || 0)))}%`;
+        } catch {
+          stage.textContent = "连接中";
+          badge.textContent = "离线";
+          message.textContent = "正在连接本地服务";
+        }
+      }
+
+      document.getElementById("pause").addEventListener("click", async () => {
+        await window.agentDesktop.pauseTask();
+        await refresh();
+      });
+      document.getElementById("resume").addEventListener("click", async () => {
+        await window.agentDesktop.resumeTask();
+        await refresh();
+      });
+      document.getElementById("stop").addEventListener("click", async () => {
+        await window.agentDesktop.stopTask();
+        await refresh();
+      });
+      window.agentDesktop.onTaskRefresh(refresh);
+      refresh();
+      setInterval(refresh, 1000);
+    </script>
+  </body>
+</html>

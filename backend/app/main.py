@@ -61,6 +61,18 @@ class ContactSyncRequest(BaseModel):
     auto_decrypt: bool = True
 
 
+class TaskControlRequest(BaseModel):
+    action: str
+
+
+runtime_control_state: dict[str, Any] = {
+    "paused": False,
+    "stopped": False,
+    "last_action": "",
+    "updated_at": None,
+}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "backend"}
@@ -148,6 +160,11 @@ def window_probe() -> dict[str, object]:
 @app.post("/wechat/window/normalize")
 def normalize_wechat_window() -> dict[str, object]:
     return _sidecar_post("/wechat/window/normalize", {})
+
+
+@app.post("/wechat/window/prepare-dedicated-desktop")
+def prepare_dedicated_desktop() -> dict[str, object]:
+    return _sidecar_post("/wechat/window/prepare-dedicated-desktop", {})
 
 
 @app.get("/send/driver/probe")
@@ -425,6 +442,72 @@ def list_task_events():
     return [event.model_dump(mode="json") for event in store.list_task_events()]
 
 
+@app.get("/tasks/current")
+def current_task() -> dict[str, object]:
+    tasks = store.list_tasks(limit=1)
+    if not tasks:
+        return {
+            "active": False,
+            "stage": "idle",
+            "stage_label": "空闲中",
+            "customer": "",
+            "progress": 0,
+            "message": "还没有运行中的任务",
+            "can_pause": False,
+            "paused": bool(runtime_control_state["paused"]),
+            "stopped": bool(runtime_control_state["stopped"]),
+        }
+    task = tasks[0]
+    events = store.list_task_events(task_id=task.id, limit=20)
+    last_event = events[-1] if events else None
+    message = last_event.message if last_event else task.error or task.step
+    return {
+        "active": task.status not in {TaskStatus.succeeded, TaskStatus.failed, TaskStatus.blocked, TaskStatus.stopped},
+        "task": task.model_dump(mode="json"),
+        "stage": _runtime_stage(task.status, message),
+        "stage_label": _runtime_stage_label(task.status, message),
+        "customer": task.target_id,
+        "progress": task.progress,
+        "message": _friendly_runtime_message(message),
+        "can_pause": task.status in {TaskStatus.preflight, TaskStatus.running, TaskStatus.verifying},
+        "paused": bool(runtime_control_state["paused"]) or task.status == TaskStatus.paused,
+        "stopped": bool(runtime_control_state["stopped"]) or task.status == TaskStatus.stopped,
+        "last_event": last_event.model_dump(mode="json") if last_event else None,
+    }
+
+
+@app.post("/tasks/control")
+def control_task(request: TaskControlRequest) -> dict[str, object]:
+    action = request.action.strip().lower()
+    if action not in {"pause", "resume", "stop"}:
+        raise HTTPException(status_code=400, detail="unsupported_task_control_action")
+    runtime_control_state["last_action"] = action
+    runtime_control_state["updated_at"] = datetime.now(UTC).isoformat()
+    tasks = store.list_tasks(limit=1)
+    task = tasks[0] if tasks else None
+
+    if action == "pause":
+        runtime_control_state["paused"] = True
+        if task and task.status in {TaskStatus.preflight, TaskStatus.running, TaskStatus.verifying}:
+            store.update_task(task.id, status=TaskStatus.paused, step="paused", progress=task.progress, error="operator_paused")
+            store.add_task_event(task_id=task.id, status=TaskStatus.paused, message="operator_paused")
+    elif action == "resume":
+        runtime_control_state["paused"] = False
+        runtime_control_state["stopped"] = False
+        if task and task.status == TaskStatus.paused:
+            store.update_task(task.id, status=TaskStatus.running, step="running", progress=task.progress, error=None)
+            store.add_task_event(task_id=task.id, status=TaskStatus.running, message="operator_resumed")
+    else:
+        runtime_control_state["stopped"] = True
+        runtime_control_state["paused"] = False
+        sidecar_result = _sidecar_post("/rpa/stop", {})
+        if task and task.status not in {TaskStatus.succeeded, TaskStatus.failed, TaskStatus.blocked, TaskStatus.stopped}:
+            store.update_task(task.id, status=TaskStatus.stopped, step="stopped", progress=task.progress, error="operator_stopped")
+            store.add_task_event(task_id=task.id, status=TaskStatus.stopped, message="operator_stopped")
+        return {"ok": True, "action": action, "sidecar": sidecar_result, "current": current_task()}
+    return {"ok": True, "action": action, "current": current_task()}
+
+
 @app.get("/tasks/{task_id}")
 def get_task(task_id: str):
     return next((task.model_dump(mode="json") for task in store.list_tasks() if task.id == task_id), {"error": "not_found"})
@@ -498,3 +581,52 @@ def _should_stop_touch_batch(sidecar_result: dict[str, object]) -> bool:
         "foreground_not_changed",
     }
     return reason in infrastructure_failures or reason.startswith("sidecar_unavailable:")
+
+
+def _runtime_stage(status: TaskStatus, message: str = "") -> str:
+    if status in {TaskStatus.pending, TaskStatus.preflight}:
+        return "preparing"
+    if status in {TaskStatus.running, TaskStatus.verifying}:
+        return "auto_touch"
+    if status == TaskStatus.paused:
+        return "paused"
+    if status == TaskStatus.succeeded:
+        return "completed"
+    if status == TaskStatus.blocked:
+        return "blocked"
+    if status == TaskStatus.stopped:
+        return "stopped"
+    if status == TaskStatus.failed:
+        return "failed"
+    return "auto_touch" if "send" in message else "idle"
+
+
+def _runtime_stage_label(status: TaskStatus, message: str = "") -> str:
+    labels = {
+        "preparing": "准备中",
+        "auto_touch": "自动触达中",
+        "paused": "已暂停",
+        "completed": "已完成",
+        "blocked": "已拦截",
+        "stopped": "已停止",
+        "failed": "失败",
+        "idle": "空闲中",
+    }
+    return labels[_runtime_stage(status, message)]
+
+
+def _friendly_runtime_message(message: str) -> str:
+    labels = {
+        "preflight": "正在做发送前检查",
+        "blocked_window_not_foreground": "微信没有切到前台，已停止发送",
+        "foreground_not_changed": "微信没有切到前台，已停止发送",
+        "wechat_window_not_found": "没有找到微信主窗口",
+        "blocked_search_input_missing": "没有找到微信搜索框，已停止发送",
+        "blocked_message_input_missing": "没有找到聊天输入框，已停止发送",
+        "failed_message_not_verified": "发送后没有校验到消息，已停止",
+        "message_sent": "消息已发送并记录",
+        "operator_paused": "已暂停",
+        "operator_resumed": "已继续",
+        "operator_stopped": "已停止",
+    }
+    return labels.get(message, message or "等待中")

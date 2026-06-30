@@ -595,6 +595,7 @@ class AgentStore:
         return TaskRun(
             id=row.id,
             action_type=row.action_type,
+            target_id=row.target_id,
             status=TaskStatus(row.status),
             step=row.step,
             progress=row.progress,
