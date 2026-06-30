@@ -6,6 +6,7 @@ from app.services.weixin_driver import EvidenceRecorder, RealAutomationDriver, W
 class FakeRealDriver:
     def __init__(self) -> None:
         self.send_attempts = 0
+        self.calibrate_attempts = 0
         self.controlled_screen_state = type(
             "State",
             (),
@@ -41,12 +42,16 @@ class FakeRealDriver:
             "last_receipt": None,
         }
 
+    def calibrate_send_driver(self) -> dict[str, object]:
+        self.calibrate_attempts += 1
+        return {"success": False, "calibrated": False, "message": "window_calibration_failed"}
+
     def send_message(self, **kwargs):
         self.send_attempts += 1
-        raise AssertionError("real UI send must not be called before non-screen driver verification")
+        raise AssertionError("real UI send must not be called when window calibration fails")
 
 
-def test_message_send_blocks_before_controlled_screen_driver_is_calibrated():
+def test_message_send_blocks_when_auto_calibration_fails():
     real_driver = FakeRealDriver()
     driver = WeixinAutomationDriver(real_driver, dry_run=False)
 
@@ -62,6 +67,7 @@ def test_message_send_blocks_before_controlled_screen_driver_is_calibrated():
     assert result.verification_status == "blocked"
     assert result.message == "请先校准微信窗口，未执行发送"
     assert result.failure_reason == "请先校准微信窗口，未执行发送"
+    assert real_driver.calibrate_attempts == 1
     assert real_driver.send_attempts == 0
 
 

@@ -243,6 +243,46 @@ def chat_history(contact_id: str | None = None) -> dict[str, object]:
     return {"contact_id": contact_id, "messages": []}
 
 
+@app.post("/wechat/message/open-conversation")
+def open_wechat_conversation(action: AutomationAction):
+    task = store.create_task(action_type="message.open_conversation", target_id=action.target_id, status=TaskStatus.preflight)
+    store.add_task_event(task_id=task.id, status=TaskStatus.preflight, message="preflight")
+    payload = {**action.payload}
+    payload["search_terms"] = _search_terms_for_target(action.target_id, payload)
+    result = _sidecar_post(
+        "/wechat/message/open-conversation",
+        {
+            "action_type": "message.open_conversation",
+            "target_id": action.target_id,
+            "payload": payload,
+        },
+    )
+    evidence = result.get("evidence") or {}
+    evidence_path = _first_evidence_path(evidence)
+    for kind, path in evidence.items():
+        if isinstance(path, str) and (path.endswith(".png") or path.endswith(".txt")):
+            store.add_evidence_file(path=path, task_id=task.id, target_id=action.target_id, kind=str(kind))
+    verification_status = str(result.get("verification_status") or "")
+    success = bool(result.get("success")) and verification_status == "verified"
+    if success:
+        status = TaskStatus.succeeded
+    elif verification_status == "blocked":
+        status = TaskStatus.blocked
+    else:
+        status = TaskStatus.failed
+    message = str(result.get("message") or result.get("failure_reason") or "open_conversation_failed")
+    updated = store.update_task(
+        task.id,
+        status=status,
+        step="completed" if success else status.value,
+        progress=100,
+        error=None if success else message,
+    )
+    store.add_task_event(task_id=task.id, status=status, message=message, evidence_path=evidence_path)
+    store.add_audit_log(action="message.open_conversation", target=action.target_id, payload={"search_terms": payload["search_terms"]}, result=message, evidence_path=evidence_path)
+    return {"task": updated.model_dump(mode="json"), "sidecar": result}
+
+
 @app.post("/wechat/message/send")
 @app.post("/chat/send")
 def send_message(action: AutomationAction):
@@ -571,6 +611,16 @@ def _search_terms_for_contact(contact: Any) -> list[str]:
     return terms
 
 
+def _search_terms_for_target(target_id: str, payload: dict[str, Any]) -> list[str]:
+    payload_terms = [str(term).strip() for term in payload.get("search_terms") or [] if str(term).strip()]
+    if payload_terms:
+        return payload_terms
+    for contact in store.list_contacts(limit=1000):
+        if target_id in {contact.id, contact.wxid, contact.raw_wxid}:
+            return _search_terms_for_contact(contact)
+    return [target_id]
+
+
 def _should_stop_touch_batch(sidecar_result: dict[str, object]) -> bool:
     reason = str(sidecar_result.get("message") or sidecar_result.get("failure_reason") or "")
     infrastructure_failures = {
@@ -580,7 +630,7 @@ def _should_stop_touch_batch(sidecar_result: dict[str, object]) -> bool:
         "wechat_hwnd_missing",
         "foreground_not_changed",
     }
-    return reason in infrastructure_failures or reason.startswith("sidecar_unavailable:")
+    return reason in infrastructure_failures or reason.startswith("wechat_window_lost_") or reason.startswith("sidecar_unavailable:")
 
 
 def _runtime_stage(status: TaskStatus, message: str = "") -> str:
@@ -622,11 +672,19 @@ def _friendly_runtime_message(message: str) -> str:
         "foreground_not_changed": "微信没有切到前台，已停止发送",
         "wechat_window_not_found": "没有找到微信主窗口",
         "blocked_search_input_missing": "没有找到微信搜索框，已停止发送",
+        "blocked_target_not_found": "没有找到客户，已停止发送",
+        "blocked_target_element_missing": "没有找到客户搜索结果，已停止发送",
+        "blocked_wrong_search_surface": "搜索结果不是微信联系人，已停止发送",
+        "blocked_ambiguous_target": "找到多个相似客户，已停止发送",
+        "blocked_conversation_mismatch": "没有进入正确会话，已停止发送",
         "blocked_message_input_missing": "没有找到聊天输入框，已停止发送",
         "failed_message_not_verified": "发送后没有校验到消息，已停止",
+        "conversation_opened": "客户会话已打开，未发送消息",
         "message_sent": "消息已发送并记录",
         "operator_paused": "已暂停",
         "operator_resumed": "已继续",
         "operator_stopped": "已停止",
     }
+    if message.startswith("wechat_window_lost_"):
+        return "微信窗口被切走，已停止发送"
     return labels.get(message, message or "等待中")

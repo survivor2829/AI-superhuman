@@ -404,6 +404,16 @@ h2 {
   width: 100%;
 }
 
+.button-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.button-row .wide-button {
+  flex: 1;
+}
+
 .diagnostics summary {
   cursor: pointer;
   display: flex;

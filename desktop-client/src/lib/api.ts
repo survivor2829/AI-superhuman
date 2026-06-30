@@ -271,6 +271,12 @@ export const api = {
   },
   createTouchPlan: () => postJson<{ id: string }>(`${BACKEND_URL}/touch/plans`, { name: "小批量触达", target_limit: 5 }),
   previewTouchPlan: (planId: string) => postJson<TouchPreview>(`${BACKEND_URL}/touch/plans/${planId}/preview`, { limit: 5, direct_send: true }),
+  openConversation: (targetId: string) => postJson<{ task: TaskRun; sidecar: Record<string, unknown> }>(`${BACKEND_URL}/wechat/message/open-conversation`, {
+    action_type: "message.open_conversation",
+    account_id: "local",
+    target_id: targetId,
+    payload: {}
+  }),
   runTouchPlan: (planId: string, limit = 5) => postJson<{ ran: number; allowed_limit?: number; requested_limit?: number; results: unknown[] }>(`${BACKEND_URL}/touch/plans/${planId}/run`, { limit, direct_send: true }),
   tasks: () => getJson<TaskRun[]>(`${BACKEND_URL}/tasks`),
   currentTask: () => getJson<CurrentTaskStatus>(`${BACKEND_URL}/tasks/current`),

@@ -123,6 +123,19 @@ def test_clean_outbound_message_keeps_single_prefix_and_removes_duplicate_punctu
     assert cleaned == "这是测试说明：您好，是玺联惠的创客合伙人。"
 
 
+def test_clean_outbound_message_treats_fullwidth_and_ascii_prefix_as_same():
+    prefix = "\u8fd9\u662f\u6d4b\u8bd5\u8bf4\u660e\uff1a"
+    ascii_prefix_content = "\u8fd9\u662f\u6d4b\u8bd5\u8bf4\u660e:UTF8\u5185\u5bb9\u9a8c\u8bc1"
+    fullwidth_prefix_content = "\u8fd9\u662f\u6d4b\u8bd5\u8bf4\u660e\uff1aUTF8\u5185\u5bb9\u9a8c\u8bc1"
+
+    assert clean_outbound_message(ascii_prefix_content, prefix=prefix) == (
+        "\u8fd9\u662f\u6d4b\u8bd5\u8bf4\u660e\uff1aUTF8\u5185\u5bb9\u9a8c\u8bc1"
+    )
+    assert clean_outbound_message(fullwidth_prefix_content, prefix="\u8fd9\u662f\u6d4b\u8bd5\u8bf4\u660e:") == (
+        "\u8fd9\u662f\u6d4b\u8bd5\u8bf4\u660e:UTF8\u5185\u5bb9\u9a8c\u8bc1"
+    )
+
+
 def test_touch_run_sends_remark_nickname_alias_search_terms(monkeypatch, tmp_path):
     import app.main as main
 
@@ -280,6 +293,23 @@ def test_current_task_returns_customer_stage_and_friendly_message(monkeypatch, t
     assert result["message"] == "微信没有切到前台，已停止发送"
 
 
+def test_current_task_translates_target_and_window_loss_failures(monkeypatch, tmp_path):
+    import app.main as main
+
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    monkeypatch.setattr(main, "store", store)
+
+    task = store.create_task(action_type="message.send", target_id="wxid_customer", status=TaskStatus.preflight)
+    store.update_task(task.id, status=TaskStatus.blocked, step="blocked", progress=100, error="wechat_window_lost_search_results")
+    store.add_task_event(task_id=task.id, status=TaskStatus.blocked, message="wechat_window_lost_search_results")
+
+    result = main.current_task()
+
+    assert result["message"] == "微信窗口被切走，已停止发送"
+    assert main._friendly_runtime_message("blocked_target_not_found") == "没有找到客户，已停止发送"
+
+
 def test_task_control_pause_marks_running_task_paused(monkeypatch, tmp_path):
     import app.main as main
 
@@ -294,3 +324,46 @@ def test_task_control_pause_marks_running_task_paused(monkeypatch, tmp_path):
     assert response["ok"] is True
     assert response["current"]["paused"] is True
     assert store.list_tasks()[0].status == TaskStatus.paused
+
+
+def test_open_conversation_endpoint_uses_contact_search_terms_and_records_task(monkeypatch, tmp_path):
+    import app.main as main
+
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    monkeypatch.setattr(main, "store", store)
+    store.upsert_contact(
+        account_id="wxid_local",
+        wxid="wxid_alice",
+        nickname="Alice Nick",
+        remark="Alice Remark",
+        alias="alice_alias",
+        source="wechat_local_contact_db",
+        local_type=1,
+        contact_flag=1,
+        delete_flag=0,
+    )
+    captured: list[tuple[str, dict]] = []
+
+    def fake_sidecar_post(path: str, payload: dict) -> dict:
+        captured.append((path, payload))
+        return {
+            "success": True,
+            "verification_status": "verified",
+            "message": "conversation_opened",
+            "opened_conversation_title": "Alice Remark",
+            "matched_target": "Alice Remark",
+            "search_term_used": "Alice Remark",
+            "evidence": {"conversation_verified": r"C:\evidence\open.png"},
+        }
+
+    monkeypatch.setattr(main, "_sidecar_post", fake_sidecar_post)
+
+    response = main.open_wechat_conversation(
+        AutomationAction(action_type="message.open_conversation", account_id="wxid_local", target_id="wxid_alice", payload={})
+    )
+
+    assert captured[0][0] == "/wechat/message/open-conversation"
+    assert captured[0][1]["payload"]["search_terms"] == ["Alice Remark", "Alice Nick", "alice_alias", "wxid_alice"]
+    assert response["task"]["status"] == TaskStatus.succeeded.value
+    assert response["sidecar"]["message"] == "conversation_opened"

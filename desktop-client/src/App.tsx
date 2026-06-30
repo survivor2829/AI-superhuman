@@ -71,7 +71,8 @@ const REASON_LABELS: Record<string, string> = {
   failed_message_not_verified: "发送后未核验到消息",
   window_calibration_required: "请先校准微信窗口",
   live_gate_required: "请先完成 1 个测试客户验证",
-  controlled_screen_calibration_required: "请先校准微信窗口"
+  controlled_screen_calibration_required: "请先校准微信窗口",
+  conversation_opened: "客户会话已打开"
 };
 
 const DRIVER_STATUS_LABELS: Record<string, string> = {
@@ -230,6 +231,46 @@ export function App() {
     setActiveView("send");
   });
 
+  const openFirstConversation = async () => runAction("open-conversation", async () => {
+    if (touchableContacts.length === 0) {
+      setNotice("请先静默同步通讯录，或检查是否已全部移除");
+      return;
+    }
+    if (!sendCalibrated) {
+      setNotice("请先校准微信窗口，再测试打开客户会话");
+      setActiveView("send");
+      return;
+    }
+    const nextPlanId = await getOrCreatePlanId();
+    const previewResult = preview || await api.previewTouchPlan(nextPlanId);
+    setPreview(previewResult);
+    const target = previewResult.targets.find((item) => item.allowed) || previewResult.targets[0];
+    if (!target) {
+      setNotice("没有可测试的客户，请先同步通讯录");
+      return;
+    }
+    let electronRunMode = false;
+    try {
+      setNotice("正在只打开客户会话，不会发送消息");
+      const prepareResult = window.agentDesktop ? await window.agentDesktop.enterRunMode() : await api.prepareDedicatedDesktop();
+      electronRunMode = Boolean(window.agentDesktop);
+      if (prepareResult.success === false) {
+        setNotice(String(prepareResult.message || "微信窗口没有准备好，未打开会话"));
+        return;
+      }
+      const result = await api.openConversation(target.wxid);
+      const sidecar = result.sidecar || {};
+      const verified = sidecar.verification_status === "verified";
+      setNotice(verified ? `已打开客户会话：${target.nickname || target.wxid}` : String(sidecar.failure_reason || sidecar.message || "未打开客户会话"));
+      await refresh();
+      setActiveView("results");
+    } finally {
+      if (electronRunMode) {
+        await window.agentDesktop?.exitRunMode();
+      }
+    }
+  });
+
   const runTaskControl = async (action: "pause" | "resume" | "stop") => runAction(`task-${action}`, async () => {
     if (window.agentDesktop) {
       if (action === "pause") await window.agentDesktop.pauseTask();
@@ -383,6 +424,7 @@ export function App() {
           <button className="primary-button" onClick={() => void syncContacts()} disabled={busyAction !== null}><UsersRound size={16} />静默同步通讯录</button>
           <button className="primary-button" onClick={() => void preparePreview()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成预览</button>
           <button className="primary-button" onClick={() => void calibrateWechatWindow()} disabled={busyAction !== null || !wechatReady}><Radar size={16} />校准微信窗口</button>
+          <button className="primary-button" onClick={() => void openFirstConversation()} disabled={busyAction !== null || touchableContacts.length === 0 || !sendCalibrated}><MessageSquareText size={16} />只打开会话</button>
           <button className="danger-button" onClick={() => void runSmallBatch()} disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend}><Send size={16} />{canAutoSend ? "开始小批量" : canRunControlledSend ? "开始 1 人验证" : "待校准"}</button>
           <button className="ghost-button" onClick={() => void runTaskControl(currentTask?.paused ? "resume" : "pause")} disabled={busyAction !== null}>
             <PauseCircle size={16} />{currentTask?.paused ? "继续" : "暂停"}
@@ -513,7 +555,10 @@ export function App() {
                 <span>测试前缀</span><strong>{settings?.rpa_send_prefix || "这是测试说明："}</strong>
                 <span>安全规则</span><strong>{canAutoSend ? "已通过单人验证" : sendCalibrated ? "只发 1 人验证" : "未校准不发送"}</strong>
               </div>
-              <button className="danger-button wide-button" disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend} onClick={() => void runSmallBatch()}><Send size={16} />{canAutoSend ? "确认开始小批量" : canRunControlledSend ? "开始 1 人验证" : "请先校准微信窗口"}</button>
+              <div className="button-row">
+                <button className="primary-button" disabled={busyAction !== null || touchableContacts.length === 0 || !sendCalibrated} onClick={() => void openFirstConversation()}><MessageSquareText size={16} />只打开会话</button>
+                <button className="danger-button wide-button" disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend} onClick={() => void runSmallBatch()}><Send size={16} />{canAutoSend ? "确认开始小批量" : canRunControlledSend ? "开始 1 人验证" : "请先校准微信窗口"}</button>
+              </div>
             </div>
           </section>
         )}

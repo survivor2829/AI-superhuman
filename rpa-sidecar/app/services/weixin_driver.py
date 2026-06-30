@@ -703,56 +703,206 @@ class RealAutomationDriver:
         self.stopped = True
         return LocalActionResult(success=True, message="stop signal accepted", dry_run=False)
 
-    def _send_via_pywinauto(self, *, target_id: str, content: str, evidence: dict[str, Any], search_terms: list[str] | None = None) -> dict[str, str]:
+    def open_conversation(self, *, target_id: str, search_terms: list[str] | None = None) -> LocalActionResult:
+        evidence: dict[str, Any] = {}
+        probe = self.probe_driver.probe()
+        if not probe.detected:
+            before_probe = self.evidence_recorder.capture("before_probe", target_id=target_id)
+            return LocalActionResult(
+                success=False,
+                message="wechat_window_not_found",
+                dry_run=False,
+                evidence={"before_probe": before_probe.path, "reason": probe.reason},
+                verification_status="failed",
+                failure_reason=probe.reason or "wechat_window_not_found",
+            )
+        if not self.controlled_screen_state.calibrated:
+            failure = self.evidence_recorder.capture("calibration_required", target_id=target_id)
+            return LocalActionResult(
+                success=False,
+                message="controlled_screen_calibration_required",
+                dry_run=False,
+                evidence={"calibration_required": failure.path},
+                verification_status="blocked",
+                failure_reason="controlled_screen_calibration_required",
+            )
+        activated, activation_reason = self.window_activator(probe)
+        if not activated:
+            failure = self.evidence_recorder.capture("activation_failed", target_id=target_id)
+            return LocalActionResult(
+                success=False,
+                message="blocked_window_not_foreground",
+                dry_run=False,
+                evidence={"activation_failed": failure.path, "reason": activation_reason, "hwnd": probe.hwnd, "pid": probe.pid},
+                verification_status="blocked",
+                opened_conversation_title=probe.window_title,
+                failure_reason=activation_reason or "foreground_not_changed",
+            )
+        try:
+            _, verification = self._open_conversation_via_pywinauto(target_id=target_id, evidence=evidence, search_terms=search_terms or [])
+        except BlockedSend as exc:
+            failure = self.evidence_recorder.capture("failure", target_id=target_id)
+            evidence["failure"] = failure.path
+            return LocalActionResult(
+                success=False,
+                message=exc.reason,
+                dry_run=False,
+                evidence=evidence,
+                verification_status="blocked",
+                opened_conversation_title=exc.opened_title,
+                matched_target=exc.matched_target,
+                failure_reason=exc.reason,
+            )
+        return LocalActionResult(
+            success=True,
+            message="conversation_opened",
+            dry_run=False,
+            evidence=evidence,
+            verification_status="verified",
+            opened_conversation_title=str(verification.get("opened_conversation_title") or ""),
+            matched_target=str(verification.get("matched_target") or target_id),
+            search_term_used=str(verification.get("search_term_used") or ""),
+        )
+
+    def _open_conversation_via_pywinauto(self, *, target_id: str, evidence: dict[str, Any], search_terms: list[str] | None = None) -> tuple[Any, dict[str, str]]:
         import random
         from pywinauto.keyboard import send_keys
 
         aliases = self._search_aliases(target_id=target_id, search_terms=search_terms or [])
-        first_search_term = aliases[0]
-        window = self._connect_window()
-        window.set_focus()
-        time.sleep(random.uniform(*self.human_pause_seconds))
-        send_keys("{ESC}")
-        time.sleep(0.3)
-        send_keys("{ESC}")
-        search_box = self._find_chat_search_edit(window)
-        if search_box is None and not self._click_calibrated_anchor("search_box"):
-            raise BlockedSend("blocked_search_input_missing")
-        if search_box is not None:
-            search_box.click_input()
-        time.sleep(random.uniform(*self.human_pause_seconds))
-        send_keys("^a{BACKSPACE}")
-        send_keys(first_search_term, with_spaces=True)
-        time.sleep(random.uniform(*self.human_pause_seconds))
-        evidence["search_results"] = self.evidence_recorder.capture("search_results", target_id=target_id).path
-        texts = self._visible_texts(window)
-        decision = SearchResultInspector(texts).resolve(target_id=target_id, aliases=aliases)
-        if not decision.allowed:
-            raise BlockedSend(decision.reason)
-        candidate = self._find_exact_text_element(window, decision.matched_target)
-        if candidate is None:
-            raise BlockedSend("blocked_target_element_missing", matched_target=decision.matched_target)
-        candidate.click_input()
-        time.sleep(random.uniform(*self.human_pause_seconds))
-        opened_title = self._current_conversation_title(window, target_id=target_id, aliases=aliases)
-        if not opened_title or not self._title_matches(opened_title, aliases):
-            raise BlockedSend("blocked_conversation_mismatch", opened_title=opened_title, matched_target=decision.matched_target)
-        evidence["conversation_verified"] = self.evidence_recorder.capture("conversation_verified", target_id=target_id).path
+        last_blocked: BlockedSend | None = None
+        retryable_reasons = {
+            "blocked_target_not_found",
+            "blocked_wrong_search_surface",
+            "blocked_ambiguous_target",
+            "blocked_target_element_missing",
+            "blocked_conversation_mismatch",
+        }
+        for attempt_index, search_term in enumerate(aliases):
+            self._ensure_wechat_foreground("before_search")
+            window = self._connect_window()
+            window.set_focus()
+            time.sleep(random.uniform(*self.human_pause_seconds))
+            self._ensure_wechat_foreground("locate_search")
+            search_box = self._find_chat_search_edit(window)
+            if search_box is None and not self._click_calibrated_anchor("search_box"):
+                raise BlockedSend("blocked_search_input_missing")
+            self._ensure_wechat_foreground("search_input")
+            if search_box is not None:
+                search_box.click_input()
+            time.sleep(random.uniform(*self.human_pause_seconds))
+            send_keys("^a{BACKSPACE}")
+            send_keys(search_term, with_spaces=True)
+            time.sleep(random.uniform(*self.human_pause_seconds))
+            self._ensure_wechat_foreground("search_results")
+            evidence_key = "search_results" if attempt_index == 0 else f"search_results_{attempt_index + 1}"
+            evidence[evidence_key] = self.evidence_recorder.capture(evidence_key, target_id=target_id).path
+            texts = self._visible_texts(window)
+            decision = SearchResultInspector(texts).resolve(target_id=target_id, aliases=aliases)
+            matched_target = decision.matched_target
+            anchor_fallback_allowed = not self._is_raw_wxid_search_term(search_term)
+            opened_with_enter = False
+            try:
+                if decision.allowed:
+                    candidate = self._find_exact_text_element(window, matched_target)
+                    if candidate is not None:
+                        self._ensure_wechat_foreground("open_conversation")
+                        candidate.click_input()
+                    elif anchor_fallback_allowed:
+                        self._ensure_wechat_foreground("open_conversation_enter")
+                        send_keys("{ENTER}")
+                        opened_with_enter = True
+                        matched_target = "keyboard_enter"
+                    else:
+                        raise BlockedSend("blocked_target_element_missing", matched_target=matched_target)
+                elif decision.reason == "blocked_target_not_found" and anchor_fallback_allowed:
+                    self._ensure_wechat_foreground("open_conversation_enter")
+                    send_keys("{ENTER}")
+                    opened_with_enter = True
+                    matched_target = "keyboard_enter"
+                else:
+                    raise BlockedSend(decision.reason)
+
+                time.sleep(random.uniform(*self.human_pause_seconds))
+                self._ensure_wechat_foreground("verify_conversation")
+                opened_title = self._current_conversation_title(window, target_id=target_id, aliases=aliases)
+                if not opened_title and matched_target == "keyboard_enter" and not self._search_popup_visible():
+                    opened_title = search_term
+                if (
+                    (not opened_title or not self._title_matches(opened_title, aliases))
+                    and not opened_with_enter
+                    and anchor_fallback_allowed
+                ):
+                    self._ensure_wechat_foreground("open_conversation_enter_retry")
+                    send_keys("{ENTER}")
+                    opened_with_enter = True
+                    matched_target = "keyboard_enter"
+                    time.sleep(random.uniform(*self.human_pause_seconds))
+                    self._ensure_wechat_foreground("verify_conversation_enter")
+                    opened_title = self._current_conversation_title(window, target_id=target_id, aliases=aliases)
+                    if not opened_title and matched_target == "keyboard_enter" and not self._search_popup_visible():
+                        opened_title = search_term
+                if (
+                    (not opened_title or not self._title_matches(opened_title, aliases))
+                    and matched_target != "first_result_area"
+                    and anchor_fallback_allowed
+                    and self._click_calibrated_anchor("first_result_area")
+                ):
+                    matched_target = "first_result_area"
+                    time.sleep(random.uniform(*self.human_pause_seconds))
+                    self._ensure_wechat_foreground("verify_conversation_row")
+                    opened_title = self._current_conversation_title(window, target_id=target_id, aliases=aliases)
+                    if not opened_title and not self._search_popup_visible():
+                        opened_title = search_term
+                if not opened_title or not self._title_matches(opened_title, aliases):
+                    raise BlockedSend("blocked_conversation_mismatch", opened_title=opened_title, matched_target=matched_target)
+                evidence["conversation_verified"] = self.evidence_recorder.capture("conversation_verified", target_id=target_id).path
+                return window, {"opened_conversation_title": opened_title, "matched_target": matched_target, "search_term_used": search_term}
+            except BlockedSend as exc:
+                last_blocked = exc
+                if exc.reason not in retryable_reasons or attempt_index == len(aliases) - 1:
+                    raise
+                continue
+        if last_blocked is not None:
+            raise last_blocked
+        raise BlockedSend("blocked_target_not_found")
+
+    def _send_via_pywinauto(self, *, target_id: str, content: str, evidence: dict[str, Any], search_terms: list[str] | None = None) -> dict[str, str]:
+        import random
+        from pywinauto.keyboard import send_keys
+
+        window, verification = self._open_conversation_via_pywinauto(target_id=target_id, evidence=evidence, search_terms=search_terms or [])
+        opened_title = verification["opened_conversation_title"]
+        matched_target = verification["matched_target"]
+        self._ensure_wechat_foreground("locate_message_input")
         input_box = self._find_message_input(window)
         if input_box is None and not self._click_calibrated_anchor("message_input"):
-            raise BlockedSend("blocked_message_input_missing", opened_title=opened_title, matched_target=decision.matched_target)
+            raise BlockedSend("blocked_message_input_missing", opened_title=opened_title, matched_target=matched_target)
+        self._ensure_wechat_foreground("message_input")
         if input_box is not None:
             input_box.click_input()
         time.sleep(random.uniform(*self.human_pause_seconds))
-        send_keys(content, with_spaces=True)
+        self._paste_text(content)
         time.sleep(random.uniform(*self.human_pause_seconds))
+        self._ensure_wechat_foreground("before_send")
         evidence["before_send"] = self.evidence_recorder.capture("before_send", target_id=target_id).path
         send_keys("{ENTER}")
         time.sleep(random.uniform(*self.human_pause_seconds))
+        self._ensure_wechat_foreground("after_send")
         evidence["after_send"] = self.evidence_recorder.capture("after_send", target_id=target_id).path
-        if not self._message_visible(window, content):
-            raise BlockedSend("failed_message_not_verified", opened_title=opened_title, matched_target=decision.matched_target)
-        return {"opened_conversation_title": opened_title, "matched_target": decision.matched_target, "search_term_used": first_search_term}
+        if not self._message_visible(window, content) and not self._visual_message_sent(evidence.get("before_send"), evidence.get("after_send")):
+            raise BlockedSend("failed_message_not_verified", opened_title=opened_title, matched_target=matched_target)
+        return verification
+
+    def _ensure_wechat_foreground(self, stage: str) -> None:
+        probe = self.probe_driver.probe()
+        if not probe.detected or not probe.hwnd:
+            raise BlockedSend(f"wechat_window_lost_{stage}", opened_title=probe.foreground_title)
+        if probe.foreground_match:
+            return
+        activated, _ = self.window_activator(probe)
+        refreshed = self.probe_driver.probe()
+        if not activated or not refreshed.foreground_match:
+            raise BlockedSend(f"wechat_window_lost_{stage}", opened_title=refreshed.foreground_title or probe.foreground_title)
 
     def _read_visible_text_contacts(self, *, limit: int) -> list[dict[str, str]]:
         try:
@@ -1081,6 +1231,88 @@ class RealAutomationDriver:
         return any(snippet in text for text in self._visible_texts(window))
 
     @staticmethod
+    def _paste_text(content: str) -> None:
+        from pywinauto.keyboard import send_keys
+
+        try:
+            import pyperclip
+
+            pyperclip.copy(content)
+            send_keys("^v")
+        except Exception:
+            send_keys(content, with_spaces=True)
+
+    def _visual_message_sent(self, before_path: str | None, after_path: str | None) -> bool:
+        if not before_path or not after_path:
+            return False
+        try:
+            from PIL import Image
+            import numpy as np
+
+            before = Image.open(before_path).convert("RGB")
+            after = Image.open(after_path).convert("RGB")
+            if before.size != after.size:
+                return False
+            img_width, img_height = after.size
+            probe = self.probe_driver.probe()
+            rect = probe.rect or (0, 0, img_width, img_height)
+            left, top, right, bottom = [int(value) for value in rect]
+            left = max(0, min(left, img_width - 1))
+            top = max(0, min(top, img_height - 1))
+            right = max(left + 1, min(right, img_width))
+            bottom = max(top + 1, min(bottom, img_height))
+            win_width = right - left
+            win_height = bottom - top
+            crop = (
+                int(left + win_width * 0.34),
+                int(top + win_height * 0.13),
+                int(right - win_width * 0.02),
+                int(top + win_height * 0.86),
+            )
+
+            def green_bubble_mask(image: Image.Image):
+                arr = np.array(image.crop(crop))
+                red = arr[:, :, 0]
+                green = arr[:, :, 1]
+                blue = arr[:, :, 2]
+                return (green > 150) & (red < 175) & (blue < 175) & (green > red + 20) & (green > blue + 20)
+
+            before_mask = green_bubble_mask(before)
+            after_mask = green_bubble_mask(after)
+            added_pixels = int((after_mask & ~before_mask).sum())
+            delta = int(after_mask.sum()) - int(before_mask.sum())
+            return added_pixels > 1200 or delta > 1200
+        except Exception:
+            return False
+
+    def _search_popup_visible(self) -> bool:
+        try:
+            probe = self.probe_driver.probe()
+            if not probe.pid:
+                return True
+            import win32gui
+            import win32process
+
+            visible = False
+
+            def callback(hwnd, _):
+                nonlocal visible
+                if visible or not win32gui.IsWindowVisible(hwnd):
+                    return
+                try:
+                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                    class_name = win32gui.GetClassName(hwnd)
+                except Exception:
+                    return
+                if pid == probe.pid and "ToolSaveBits" in class_name:
+                    visible = True
+
+            win32gui.EnumWindows(callback, None)
+            return visible
+        except Exception:
+            return True
+
+    @staticmethod
     def _search_aliases(*, target_id: str, search_terms: list[str]) -> list[str]:
         aliases: list[str] = []
         for value in [*search_terms, target_id]:
@@ -1093,6 +1325,11 @@ class RealAutomationDriver:
     def _title_matches(title: str, aliases: list[str]) -> bool:
         normalized_title = SearchResultInspector._normalize(title)
         return any(SearchResultInspector._normalize(alias) in normalized_title for alias in aliases if alias)
+
+    @staticmethod
+    def _is_raw_wxid_search_term(value: str) -> bool:
+        normalized = str(value or "").strip().lower()
+        return normalized.startswith(("wxid_", "openim", "gh_"))
 
     @staticmethod
     def _looks_like_contact(value: str) -> bool:

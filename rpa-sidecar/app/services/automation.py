@@ -98,6 +98,27 @@ class WeixinAutomationDriver:
             }
         return self.real_driver.prepare_dedicated_desktop()
 
+    def open_conversation(self, action: LocalAction) -> LocalActionResult:
+        if self.dry_run:
+            return LocalActionResult(
+                success=True,
+                message="conversation_opened",
+                dry_run=True,
+                verification_status="verified",
+                matched_target=action.target_id,
+                search_term_used=str((action.payload.get("search_terms") or [action.target_id])[0]),
+                evidence={
+                    "account_id": self.dry_driver.account_id,
+                    "target_id": action.target_id,
+                    "action_type": action.action_type,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
+        return self.real_driver.open_conversation(
+            target_id=action.target_id,
+            search_terms=list(action.payload.get("search_terms") or []),
+        )
+
     def local_accounts(self) -> list[dict[str, object]]:
         if self.dry_run:
             return []
@@ -121,6 +142,13 @@ class WeixinAutomationDriver:
             return self.dry_driver.execute(action)
         if action.action_type == "message.send":
             send_probe = self.send_driver_probe()
+            if (
+                int(send_probe.get("max_batch_size") or 0) < 1
+                and str(send_probe.get("blocked_reason") or "") == "window_calibration_required"
+            ):
+                calibration = self.calibrate_send_driver()
+                if bool(calibration.get("success")):
+                    send_probe = self.send_driver_probe()
             if int(send_probe.get("max_batch_size") or 0) < 1:
                 return LocalActionResult(
                     success=False,

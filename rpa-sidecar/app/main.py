@@ -77,6 +77,13 @@ def send_message(action: LocalAction) -> LocalActionResult:
     return driver.execute(LocalAction(action_type="message.send", target_id=action.target_id, payload=action.payload))
 
 
+@app.post("/wechat/message/open-conversation", response_model=LocalActionResult)
+def open_conversation(action: LocalAction) -> LocalActionResult:
+    return driver.open_conversation(
+        LocalAction(action_type="message.open_conversation", target_id=action.target_id, payload=action.payload)
+    )
+
+
 @app.post("/wechat/moments/publish", response_model=LocalActionResult)
 def publish_moment(action: LocalAction) -> LocalActionResult:
     return driver.execute(LocalAction(action_type="moments.publish", target_id=action.target_id, payload=action.payload))
