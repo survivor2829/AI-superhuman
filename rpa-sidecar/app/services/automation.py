@@ -98,6 +98,21 @@ class WeixinAutomationDriver:
             }
         return self.real_driver.prepare_dedicated_desktop()
 
+    def scan_moments_feed(self, *, whitelist: list[str] | None = None) -> dict[str, object]:
+        if self.dry_run:
+            items = [
+                {
+                    "target_id": target,
+                    "owner": target,
+                    "snippet": "dry run visible moment",
+                    "source": "dry_run",
+                    "whitelisted": True,
+                }
+                for target in whitelist or []
+            ]
+            return {"success": True, "message": "moments_feed_scanned", "items": items, "dry_run": True, "evidence": {}}
+        return self.real_driver.scan_moments_feed(whitelist=whitelist)
+
     def open_conversation(self, action: LocalAction) -> LocalActionResult:
         if self.dry_run:
             return LocalActionResult(

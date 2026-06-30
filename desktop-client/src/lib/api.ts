@@ -205,6 +205,52 @@ export type TouchPreview = {
   targets: TouchPreviewTarget[];
 };
 
+export type TouchQueueTarget = TouchPreviewTarget & {
+  id: string;
+  plan_id: string;
+  status: string;
+  skip_reason?: string;
+  last_touched_at?: string;
+};
+
+export type TouchQueueResponse = {
+  plan_id: string;
+  stats: Record<string, number>;
+  targets: TouchQueueTarget[];
+  queued?: number;
+  ran?: number;
+  recovered?: number;
+  results?: unknown[];
+  message?: string;
+};
+
+export type AutoReplyItem = {
+  id: string;
+  message_key: string;
+  wxid: string;
+  inbound_text: string;
+  status: string;
+  reply_text?: string;
+  intent_label?: string;
+  handoff_required?: boolean;
+  handoff_reason?: string;
+};
+
+export type MomentsFeedItem = {
+  target_id: string;
+  owner: string;
+  snippet?: string;
+  source?: string;
+  whitelisted?: boolean;
+};
+
+export type MomentsFeedResponse = {
+  success: boolean;
+  message: string;
+  items: MomentsFeedItem[];
+  evidence?: Record<string, string>;
+};
+
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8710";
 const SIDECAR_URL = import.meta.env.VITE_RPA_SIDECAR_URL || "http://127.0.0.1:8720";
 const REQUEST_TIMEOUT_MS = 240000;
@@ -271,6 +317,9 @@ export const api = {
   },
   createTouchPlan: () => postJson<{ id: string }>(`${BACKEND_URL}/touch/plans`, { name: "小批量触达", target_limit: 5 }),
   previewTouchPlan: (planId: string) => postJson<TouchPreview>(`${BACKEND_URL}/touch/plans/${planId}/preview`, { limit: 5, direct_send: true }),
+  buildTouchQueue: (planId: string, maxContacts = 1000) => postJson<TouchQueueResponse>(`${BACKEND_URL}/touch/plans/${planId}/queue/build`, { max_contacts: maxContacts }),
+  touchQueue: (planId: string) => getJson<TouchQueueResponse>(`${BACKEND_URL}/touch/plans/${planId}/queue`),
+  runTouchQueue: (planId: string, limit = 3) => postJson<TouchQueueResponse>(`${BACKEND_URL}/touch/plans/${planId}/queue/run`, { limit, direct_send: true }),
   openConversation: (targetId: string) => postJson<{ task: TaskRun; sidecar: Record<string, unknown> }>(`${BACKEND_URL}/wechat/message/open-conversation`, {
     action_type: "message.open_conversation",
     account_id: "local",
@@ -278,6 +327,16 @@ export const api = {
     payload: {}
   }),
   runTouchPlan: (planId: string, limit = 5) => postJson<{ ran: number; allowed_limit?: number; requested_limit?: number; results: unknown[] }>(`${BACKEND_URL}/touch/plans/${planId}/run`, { limit, direct_send: true }),
+  scanAutoReplies: () => postJson<{ scanned: number; queued: number; items: AutoReplyItem[] }>(`${BACKEND_URL}/auto-reply/scan`, { limit: 20 }),
+  autoReplyQueue: () => getJson<{ items: AutoReplyItem[] }>(`${BACKEND_URL}/auto-reply/queue`),
+  runAutoReplies: (limit = 1) => postJson<{ processed: number; remaining: number; results: unknown[] }>(`${BACKEND_URL}/auto-reply/run`, { limit, direct_send: true }),
+  scanMomentsFeed: () => getJson<MomentsFeedResponse>(`${BACKEND_URL}/moments/feed/scan`),
+  runMomentsInteraction: (actionType: "moments.like" | "moments.comment", targetId: string, whitelist: string[], comment = "") => postJson<Record<string, unknown>>(`${BACKEND_URL}/moments/interactions/run`, {
+    action_type: actionType,
+    account_id: "local",
+    target_id: targetId,
+    payload: { whitelist, comment }
+  }),
   tasks: () => getJson<TaskRun[]>(`${BACKEND_URL}/tasks`),
   currentTask: () => getJson<CurrentTaskStatus>(`${BACKEND_URL}/tasks/current`),
   controlTask: (action: "pause" | "resume" | "stop") => postJson<Record<string, unknown>>(`${BACKEND_URL}/tasks/control`, { action }),

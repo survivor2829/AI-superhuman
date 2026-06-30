@@ -16,6 +16,7 @@ def test_store_creates_required_tables_and_records_task_event(tmp_path):
         "contacts",
         "conversations",
         "messages",
+        "auto_reply_queue",
         "automation_plans",
         "plan_targets",
         "task_runs",

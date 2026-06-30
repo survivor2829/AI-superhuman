@@ -19,9 +19,9 @@ import {
   UsersRound
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AuditLog, Contact, CurrentTaskStatus, EvidenceFile, Health, PromptImportResponse, SendDriverProbe, Settings, TaskEvent, TaskRun, TouchPreview, WindowProbe } from "./lib/api";
+import { api, AuditLog, AutoReplyItem, Contact, CurrentTaskStatus, EvidenceFile, Health, MomentsFeedItem, PromptImportResponse, SendDriverProbe, Settings, TaskEvent, TaskRun, TouchPreview, TouchQueueResponse, WindowProbe } from "./lib/api";
 
-type ViewId = "home" | "prompt" | "contacts" | "send" | "results" | "settings";
+type ViewId = "home" | "prompt" | "contacts" | "send" | "reply" | "moments" | "results" | "settings";
 type ServiceState = "online" | "offline" | "checking";
 
 const NAV_ITEMS: Array<{ id: ViewId; label: string; icon: typeof Activity }> = [
@@ -29,6 +29,8 @@ const NAV_ITEMS: Array<{ id: ViewId; label: string; icon: typeof Activity }> = [
   { id: "prompt", label: "话术", icon: FileText },
   { id: "contacts", label: "客户", icon: UsersRound },
   { id: "send", label: "发送", icon: Send },
+  { id: "reply", label: "自动回复", icon: MessageSquareText },
+  { id: "moments", label: "朋友圈", icon: Image },
   { id: "results", label: "结果", icon: ClipboardList },
   { id: "settings", label: "设置", icon: Settings2 }
 ];
@@ -129,6 +131,9 @@ export function App() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [promptInfo, setPromptInfo] = useState<PromptImportResponse | null>(null);
   const [preview, setPreview] = useState<TouchPreview | null>(null);
+  const [touchQueue, setTouchQueue] = useState<TouchQueueResponse | null>(null);
+  const [autoReplies, setAutoReplies] = useState<AutoReplyItem[]>([]);
+  const [momentsItems, setMomentsItems] = useState<MomentsFeedItem[]>([]);
   const [planId, setPlanId] = useState<string | null>(null);
   const promptFileInput = useRef<HTMLInputElement>(null);
 
@@ -146,7 +151,8 @@ export function App() {
       api.currentTask().then(setCurrentTask).catch(() => setCurrentTask(null)),
       api.taskEvents().then(setEvents).catch(() => setEvents([])),
       api.audits().then(setAudits).catch(() => setAudits([])),
-      api.evidence().then(setEvidence).catch(() => setEvidence([]))
+      api.evidence().then(setEvidence).catch(() => setEvidence([])),
+      api.autoReplyQueue().then((result) => setAutoReplies(result.items)).catch(() => setAutoReplies([]))
     ]);
   };
 
@@ -229,6 +235,62 @@ export function App() {
     setPreview(result);
     setNotice(`已生成发送预览：${result.count} 个客户`);
     setActiveView("send");
+  });
+
+  const buildPersistentQueue = async () => runAction("build-touch-queue", async () => {
+    if (touchableContacts.length === 0) {
+      setNotice("请先静默同步通讯录，或检查是否已全部移除");
+      return;
+    }
+    const nextPlanId = await getOrCreatePlanId();
+    const result = await api.buildTouchQueue(nextPlanId, 1000);
+    setTouchQueue(result);
+    setNotice(`已生成触达队列：${result.stats.pending || 0} 人待发送，${result.stats.skipped || 0} 人跳过`);
+    await refresh();
+    setActiveView("send");
+  });
+
+  const runNextQueueBatch = async () => runAction("run-touch-queue", async () => {
+    const nextPlanId = await getOrCreatePlanId();
+    const result = await api.runTouchQueue(nextPlanId, Math.max(1, Math.min(3, maxBatchSize || 1)));
+    setTouchQueue(result);
+    setNotice(`本轮处理 ${result.ran || 0} 人，待发送 ${result.stats.pending || 0} 人`);
+    await refresh();
+    setActiveView("results");
+  });
+
+  const scanAutoReplyMessages = async () => runAction("scan-auto-reply", async () => {
+    const result = await api.scanAutoReplies();
+    setAutoReplies(result.items);
+    setNotice(`已扫描新消息：${result.scanned} 条，进入回复队列 ${result.queued} 条`);
+    await refresh();
+    setActiveView("reply");
+  });
+
+  const runAutoReplyOnce = async () => runAction("run-auto-reply", async () => {
+    const result = await api.runAutoReplies(1);
+    setNotice(`已处理自动回复 ${result.processed} 条，剩余 ${result.remaining} 条`);
+    await refresh();
+    setActiveView("reply");
+  });
+
+  const scanMoments = async () => runAction("scan-moments", async () => {
+    const result = await api.scanMomentsFeed();
+    setMomentsItems(result.items || []);
+    setNotice(result.success ? `朋友圈可见候选 ${result.items.length} 条` : `朋友圈扫描失败：${result.message}`);
+    await refresh();
+    setActiveView("moments");
+  });
+
+  const runFirstMomentLike = async () => runAction("moment-like", async () => {
+    const target = momentsItems.find((item) => item.whitelisted) || momentsItems[0];
+    if (!target) {
+      setNotice("请先扫描朋友圈，并确认白名单候选");
+      return;
+    }
+    const result = await api.runMomentsInteraction("moments.like", target.target_id, momentsItems.map((item) => item.target_id));
+    setNotice(String(result.message || "朋友圈互动已提交"));
+    await refresh();
   });
 
   const openFirstConversation = async () => runAction("open-conversation", async () => {
@@ -423,9 +485,13 @@ export function App() {
           <input ref={promptFileInput} className="file-input" type="file" accept=".docx" onChange={(event) => void importPromptFile(event)} />
           <button className="primary-button" onClick={() => void syncContacts()} disabled={busyAction !== null}><UsersRound size={16} />静默同步通讯录</button>
           <button className="primary-button" onClick={() => void preparePreview()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成预览</button>
+          <button className="primary-button" onClick={() => void buildPersistentQueue()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成队列</button>
           <button className="primary-button" onClick={() => void calibrateWechatWindow()} disabled={busyAction !== null || !wechatReady}><Radar size={16} />校准微信窗口</button>
           <button className="primary-button" onClick={() => void openFirstConversation()} disabled={busyAction !== null || touchableContacts.length === 0 || !sendCalibrated}><MessageSquareText size={16} />只打开会话</button>
           <button className="danger-button" onClick={() => void runSmallBatch()} disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend}><Send size={16} />{canAutoSend ? "开始小批量" : canRunControlledSend ? "开始 1 人验证" : "待校准"}</button>
+          <button className="danger-button" onClick={() => void runNextQueueBatch()} disabled={busyAction !== null || !canRunControlledSend}><Send size={16} />跑下一批</button>
+          <button className="primary-button" onClick={() => void scanAutoReplyMessages()} disabled={busyAction !== null}><MessageSquareText size={16} />扫新消息</button>
+          <button className="primary-button" onClick={() => void scanMoments()} disabled={busyAction !== null}><Image size={16} />扫朋友圈</button>
           <button className="ghost-button" onClick={() => void runTaskControl(currentTask?.paused ? "resume" : "pause")} disabled={busyAction !== null}>
             <PauseCircle size={16} />{currentTask?.paused ? "继续" : "暂停"}
           </button>
@@ -548,6 +614,19 @@ export function App() {
                 </tbody>
               </table>
             </div>
+            <div className="panel table-panel">
+              <div className="panel-title"><h2>持久队列</h2><span className="muted">分批跑，能暂停和断点续跑</span></div>
+              <div className="summary-box">
+                <span>待发送</span><strong>{touchQueue?.stats.pending || 0}</strong>
+                <span>已发送</span><strong>{touchQueue?.stats.sent || 0}</strong>
+                <span>已跳过</span><strong>{touchQueue?.stats.skipped || 0}</strong>
+                <span>失败/拦截</span><strong>{(touchQueue?.stats.failed || 0) + (touchQueue?.stats.blocked || 0)}</strong>
+              </div>
+              <div className="button-row">
+                <button className="primary-button" disabled={busyAction !== null || touchableContacts.length === 0} onClick={() => void buildPersistentQueue()}><ClipboardList size={16} />生成千人队列</button>
+                <button className="danger-button" disabled={busyAction !== null || !canRunControlledSend} onClick={() => void runNextQueueBatch()}><Send size={16} />运行下一批</button>
+              </div>
+            </div>
             <div className="panel">
               <div className="panel-title"><h2>发送说明</h2></div>
               <div className="summary-box">
@@ -559,6 +638,62 @@ export function App() {
                 <button className="primary-button" disabled={busyAction !== null || touchableContacts.length === 0 || !sendCalibrated} onClick={() => void openFirstConversation()}><MessageSquareText size={16} />只打开会话</button>
                 <button className="danger-button wide-button" disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend} onClick={() => void runSmallBatch()}><Send size={16} />{canAutoSend ? "确认开始小批量" : canRunControlledSend ? "开始 1 人验证" : "请先校准微信窗口"}</button>
               </div>
+            </div>
+          </section>
+        )}
+
+        {activeView === "reply" && (
+          <section className="main-grid">
+            <div className="panel">
+              <div className="panel-title"><h2>自动回复</h2><span className="muted">先只处理私聊文本</span></div>
+              <p className="plain-copy">系统会从本地消息库识别新入站私聊文本，DeepSeek 先判断是否需要人工接管。报价、会员、售后、展厅这类问题只打标签，不会自动乱回。</p>
+              <div className="button-row">
+                <button className="primary-button" disabled={busyAction !== null} onClick={() => void scanAutoReplyMessages()}><MessageSquareText size={16} />扫描新消息</button>
+                <button className="danger-button" disabled={busyAction !== null || autoReplies.length === 0 || !canRunControlledSend} onClick={() => void runAutoReplyOnce()}><Send size={16} />处理下一条</button>
+              </div>
+            </div>
+            <div className="panel table-panel">
+              <div className="panel-title"><h2>回复队列</h2><span className="muted">{autoReplies.length} 条</span></div>
+              <table>
+                <thead><tr><th>客户</th><th>消息</th><th>状态</th></tr></thead>
+                <tbody>
+                  {autoReplies.length === 0 ? <tr><td colSpan={3} className="empty">还没有待处理的新消息。</td></tr> : autoReplies.slice(0, 12).map((item) => (
+                    <tr key={item.id}>
+                      <td>{short(item.wxid, 18)}</td>
+                      <td>{short(item.inbound_text, 42)}{item.handoff_reason ? <div className="muted">{item.handoff_reason}</div> : null}</td>
+                      <td>{labelStatus(item.status) || item.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {activeView === "moments" && (
+          <section className="main-grid">
+            <div className="panel">
+              <div className="panel-title"><h2>朋友圈营销</h2><span className="muted">只对白名单候选操作</span></div>
+              <p className="plain-copy">第一版只扫描当前可见朋友圈动态并保存截图。点赞和评论必须命中白名单，否则会被后端直接拦截。</p>
+              <div className="button-row">
+                <button className="primary-button" disabled={busyAction !== null} onClick={() => void scanMoments()}><Image size={16} />扫描可见动态</button>
+                <button className="danger-button" disabled={busyAction !== null || momentsItems.length === 0} onClick={() => void runFirstMomentLike()}><CheckCircle2 size={16} />点赞第一个白名单</button>
+              </div>
+            </div>
+            <div className="panel table-panel">
+              <div className="panel-title"><h2>候选动态</h2><span className="muted">{momentsItems.length} 条</span></div>
+              <table>
+                <thead><tr><th>对象</th><th>片段</th><th>来源</th></tr></thead>
+                <tbody>
+                  {momentsItems.length === 0 ? <tr><td colSpan={3} className="empty">先打开微信朋友圈页面，再点击扫描。</td></tr> : momentsItems.map((item) => (
+                    <tr key={`${item.target_id}-${item.snippet || ""}`}>
+                      <td>{item.owner || item.target_id}</td>
+                      <td>{short(item.snippet, 48)}</td>
+                      <td>{item.whitelisted ? "白名单" : item.source || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
         )}

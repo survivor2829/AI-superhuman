@@ -89,6 +89,11 @@ def publish_moment(action: LocalAction) -> LocalActionResult:
     return driver.execute(LocalAction(action_type="moments.publish", target_id=action.target_id, payload=action.payload))
 
 
+@app.get("/wechat/moments/feed/scan")
+def scan_moments_feed() -> dict[str, object]:
+    return driver.scan_moments_feed()
+
+
 @app.post("/wechat/moments/like", response_model=LocalActionResult)
 def like_moment(action: LocalAction) -> LocalActionResult:
     return driver.execute(LocalAction(action_type="moments.like", target_id=action.target_id, payload=action.payload))

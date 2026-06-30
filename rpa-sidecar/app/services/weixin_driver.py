@@ -692,6 +692,47 @@ class RealAutomationDriver:
             receipt=self._mark_live_gate_verified(target_id=target_id, verification=verification),
         )
 
+    def scan_moments_feed(self, *, whitelist: list[str] | None = None) -> dict[str, object]:
+        evidence = self.evidence_recorder.capture("moments_feed", target_id="moments_feed")
+        probe = self.probe_driver.probe()
+        if not probe.detected:
+            return {
+                "success": False,
+                "message": "wechat_window_not_found",
+                "items": [],
+                "evidence": {"feed": evidence.path, "reason": probe.reason},
+            }
+        items: list[dict[str, object]] = []
+        try:
+            window = self._connect_window()
+            visible_texts = self._visible_texts(window)
+        except Exception:
+            visible_texts = []
+        whitelist_values = [str(item).strip() for item in whitelist or [] if str(item).strip()]
+        if whitelist_values:
+            for owner in whitelist_values:
+                for index, text in enumerate(visible_texts):
+                    if SearchResultInspector._normalize(owner) not in SearchResultInspector._normalize(text):
+                        continue
+                    snippet = " ".join(visible_texts[index : index + 3])
+                    items.append(
+                        {
+                            "target_id": owner,
+                            "owner": owner,
+                            "snippet": snippet[:120],
+                            "source": "visible_window_text",
+                            "whitelisted": True,
+                        }
+                    )
+                    break
+        return {
+            "success": True,
+            "message": "moments_feed_scanned",
+            "items": items,
+            "visible_text_count": len(visible_texts),
+            "evidence": {"feed": evidence.path},
+        }
+
     def like_moment(self, *, target_id: str, comment: str = "") -> LocalActionResult:
         evidence = self.evidence_recorder.capture("moments_interaction", target_id=target_id)
         probe = self.probe_driver.probe()

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.core.config import AgentSettings
 from app.models.schemas import AIReplyRequest, AIReplyResponse, AutomationAction, AutomationPlan, TaskStatus
 from app.services.llm import LLMRouter
+from app.services.local_messages import WechatSessionMessageScanner
 from app.services.message_cleaner import clean_outbound_message
 from app.services.prompt_loader import PromptLoader
 from app.services.store import AgentStore
@@ -35,6 +36,7 @@ store.create_schema()
 llm = LLMRouter(settings)
 legacy_engine = TaskEngine()
 prompt_loader = PromptLoader()
+message_scanner = WechatSessionMessageScanner(settings.root_dir)
 
 
 class ImportPromptRequest(BaseModel):
@@ -54,6 +56,16 @@ class TouchRunRequest(BaseModel):
     direct_send: bool = True
 
 
+class TouchQueueBuildRequest(BaseModel):
+    max_contacts: int = Field(default=1000, ge=1, le=5000)
+
+
+class TouchQueueRunRequest(BaseModel):
+    limit: int = Field(default=3, ge=1, le=100)
+    message_goal: str = "引导客户留下需求或预约上海展厅看实机"
+    direct_send: bool = True
+
+
 class ContactSyncRequest(BaseModel):
     mode: str = "local_db_full"
     account_id: str = "auto"
@@ -63,6 +75,15 @@ class ContactSyncRequest(BaseModel):
 
 class TaskControlRequest(BaseModel):
     action: str
+
+
+class AutoReplyScanRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class AutoReplyRunRequest(BaseModel):
+    limit: int = Field(default=3, ge=1, le=20)
+    direct_send: bool = True
 
 
 runtime_control_state: dict[str, Any] = {
@@ -349,6 +370,141 @@ def create_touch_plan(request: TouchPlanCreateRequest) -> AutomationPlan:
     )
 
 
+@app.post("/touch/plans/{plan_id}/queue/build")
+def build_touch_queue(plan_id: str, request: TouchQueueBuildRequest) -> dict[str, object]:
+    planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
+    contacts = store.list_contacts(
+        limit=request.max_contacts,
+        eligible_for_touch=True,
+        confirmed_for_touch=True,
+        source="wechat_local_contact_db",
+    )
+    queued: list[dict[str, object]] = []
+    for contact in contacts:
+        decision = planner.evaluate(plan_id=plan_id, contact_id=contact.id)
+        if decision.allowed:
+            row = store.upsert_plan_target(plan_id=plan_id, contact_id=contact.id, status="pending")
+        else:
+            row = store.upsert_plan_target(
+                plan_id=plan_id,
+                contact_id=contact.id,
+                status="skipped",
+                skip_reason=decision.reason,
+                next_touch_at=decision.next_touch_at,
+            )
+        queued.append({**row, "wxid": contact.wxid, "nickname": contact.nickname})
+    return {"plan_id": plan_id, "queued": len(queued), "stats": store.plan_target_stats(plan_id), "targets": queued}
+
+
+@app.get("/touch/plans/{plan_id}/queue")
+def list_touch_queue(plan_id: str, limit: int = 1000) -> dict[str, object]:
+    rows = store.list_plan_targets(plan_id=plan_id, limit=limit)
+    targets: list[dict[str, object]] = []
+    for row in rows:
+        contact = store.get_contact(str(row["contact_id"]))
+        targets.append(
+            {
+                **row,
+                "wxid": contact.wxid if contact else "",
+                "nickname": contact.nickname if contact else "",
+                "remark": contact.remark if contact else "",
+            }
+        )
+    return {"plan_id": plan_id, "stats": store.plan_target_stats(plan_id), "targets": targets}
+
+
+@app.post("/touch/plans/{plan_id}/queue/run")
+def run_touch_queue(plan_id: str, request: TouchQueueRunRequest) -> dict[str, object]:
+    recovered = store.reset_running_plan_targets(plan_id)
+    send_probe = send_driver_probe()
+    max_batch_size = int(send_probe.get("max_batch_size") or (3 if bool(send_probe.get("verified")) else 0))
+    if request.direct_send and max_batch_size < 1:
+        return {
+            "plan_id": plan_id,
+            "ran": 0,
+            "recovered": recovered,
+            "results": [],
+            "message": str(send_probe.get("message") or "send_driver_not_ready"),
+            "send_driver": send_probe,
+            "stats": store.plan_target_stats(plan_id),
+        }
+    effective_limit = min(request.limit, max_batch_size if request.direct_send else request.limit)
+    rows = store.list_plan_targets(plan_id=plan_id, statuses={"pending", "retry"}, limit=effective_limit)
+    if not rows:
+        return {"plan_id": plan_id, "ran": 0, "recovered": recovered, "results": [], "message": "queue_empty", "stats": store.plan_target_stats(plan_id)}
+
+    profile = store.latest_ai_profile()
+    if profile is None and settings.prompt_docx_path.exists():
+        profile = store.save_ai_profile(name="default", imported=prompt_loader.load(settings.prompt_docx_path))
+    system_prompt = profile["system_prompt"] if profile else "你是专业销售顾问，回复要简洁自然。"
+    knowledge = "\n".join(f"问题：{item['question']}\n答案：{item['answer']}" for item in (profile or {}).get("knowledge_base", []))
+    planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
+
+    results: list[dict[str, object]] = []
+    for row in rows:
+        if runtime_control_state["stopped"]:
+            break
+        if runtime_control_state["paused"]:
+            break
+        contact = store.get_contact(str(row["contact_id"]))
+        if contact is None:
+            store.update_plan_target_status(plan_id=plan_id, contact_id=str(row["contact_id"]), status="failed", skip_reason="missing_contact")
+            results.append({"contact_id": row["contact_id"], "status": "failed", "reason": "missing_contact"})
+            continue
+        decision = planner.evaluate(plan_id=plan_id, contact_id=contact.id)
+        if not decision.allowed:
+            store.update_plan_target_status(
+                plan_id=plan_id,
+                contact_id=contact.id,
+                status="skipped",
+                skip_reason=decision.reason,
+                next_touch_at=decision.next_touch_at,
+            )
+            results.append({"contact_id": contact.id, "wxid": contact.wxid, "status": "skipped", "reason": decision.reason, "next_touch_at": decision.next_touch_at})
+            continue
+
+        store.update_plan_target_status(plan_id=plan_id, contact_id=contact.id, status="running")
+        draft = llm.draft_reply(
+            system_prompt=system_prompt,
+            knowledge_base=knowledge,
+            message=f"请生成一条给 {contact.nickname or contact.wxid} 的首次触达微信短句，目标：{request.message_goal}",
+        )
+        if not request.direct_send:
+            store.update_plan_target_status(plan_id=plan_id, contact_id=contact.id, status="pending")
+            results.append({"contact_id": contact.id, "wxid": contact.wxid, "status": "previewed", "reply": draft.reply_text})
+            continue
+
+        message_result = send_message(
+            AutomationAction(
+                action_type="message.send",
+                account_id=contact.account_id,
+                target_id=contact.wxid,
+                payload={
+                    "content": draft.reply_text,
+                    "intent_label": draft.intent_label,
+                    "handoff_required": draft.handoff_required,
+                    "search_terms": _search_terms_for_contact(contact),
+                },
+            )
+        )
+        sidecar_result = message_result.get("sidecar") or {}
+        verification_status = str(sidecar_result.get("verification_status") or "")
+        success = bool(sidecar_result.get("success")) and verification_status == "verified"
+        if success:
+            store.mark_contact_touched(plan_id=plan_id, contact_id=contact.id, touched_at=datetime.now(UTC))
+            status = "sent"
+        else:
+            reason = str(sidecar_result.get("message") or sidecar_result.get("failure_reason") or "send_failed")
+            status = "blocked" if verification_status == "blocked" else "failed"
+            if _should_stop_touch_batch(sidecar_result):
+                status = "retry"
+            store.update_plan_target_status(plan_id=plan_id, contact_id=contact.id, status=status, skip_reason=reason)
+        results.append({"contact_id": contact.id, "wxid": contact.wxid, "status": status, "reply": draft.reply_text, "result": message_result})
+        if _should_stop_touch_batch(sidecar_result):
+            break
+    return {"plan_id": plan_id, "ran": len(results), "recovered": recovered, "allowed_limit": max_batch_size, "requested_limit": request.limit, "results": results, "stats": store.plan_target_stats(plan_id)}
+
+
 @app.post("/touch/plans/{plan_id}/run")
 def run_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
     send_probe = send_driver_probe()
@@ -447,6 +603,120 @@ def preview_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, obje
     }
 
 
+@app.post("/auto-reply/scan")
+def scan_auto_replies(request: AutoReplyScanRequest) -> dict[str, object]:
+    messages = message_scanner.scan_unread_private_text(limit=request.limit)
+    contacts = store.list_contacts(limit=5000)
+    queued: list[dict[str, object]] = []
+    for message in messages:
+        contact = _find_contact_for_wxid(str(message.wxid), contacts)
+        item = store.upsert_auto_reply_item(
+            message_key=message.message_key,
+            wxid=message.wxid,
+            inbound_text=message.content,
+            inbound_created_at=message.created_at,
+            contact_id=contact.id if contact else "",
+        )
+        queued.append(item)
+    return {"scanned": len(messages), "queued": len(queued), "items": queued}
+
+
+@app.get("/auto-reply/queue")
+def list_auto_reply_queue(limit: int = 100) -> dict[str, object]:
+    return {"items": store.list_auto_reply_items(limit=limit)}
+
+
+@app.post("/auto-reply/run")
+def run_auto_reply_queue(request: AutoReplyRunRequest) -> dict[str, object]:
+    items = store.list_auto_reply_items(statuses={"pending", "retry"}, limit=request.limit)
+    profile = store.latest_ai_profile()
+    if profile is None and settings.prompt_docx_path.exists():
+        profile = store.save_ai_profile(name="default", imported=prompt_loader.load(settings.prompt_docx_path))
+    system_prompt = profile["system_prompt"] if profile else "你是专业销售顾问，回复要简洁自然。"
+    knowledge = "\n".join(f"问题：{item['question']}\n答案：{item['answer']}" for item in (profile or {}).get("knowledge_base", []))
+
+    results: list[dict[str, object]] = []
+    contacts = store.list_contacts(limit=5000)
+    for item in items:
+        draft = llm.draft_reply(
+            system_prompt=system_prompt,
+            knowledge_base=knowledge,
+            message=str(item["inbound_text"]),
+        )
+        if draft.handoff_required:
+            updated = store.update_auto_reply_item(
+                str(item["id"]),
+                status="handoff",
+                reply_text=draft.reply_text,
+                intent_label=draft.intent_label,
+                handoff_required=True,
+                handoff_reason=draft.handoff_reason,
+            )
+            store.add_audit_log(
+                action="auto_reply.handoff",
+                target=str(item["wxid"]),
+                payload={"message_key": item["message_key"], "intent_label": draft.intent_label},
+                result=draft.handoff_reason or "handoff_required",
+            )
+            results.append({"id": item["id"], "wxid": item["wxid"], "status": "handoff", "item": updated})
+            continue
+
+        if not request.direct_send:
+            updated = store.update_auto_reply_item(
+                str(item["id"]),
+                status="drafted",
+                reply_text=draft.reply_text,
+                intent_label=draft.intent_label,
+                handoff_required=False,
+            )
+            results.append({"id": item["id"], "wxid": item["wxid"], "status": "drafted", "item": updated})
+            continue
+
+        contact = _find_contact_for_wxid(str(item["wxid"]), contacts)
+        message_result = send_message(
+            AutomationAction(
+                action_type="message.send",
+                account_id=contact.account_id if contact else "local",
+                target_id=str(item["wxid"]),
+                payload={
+                    "content": draft.reply_text,
+                    "intent_label": draft.intent_label,
+                    "handoff_required": False,
+                    "search_terms": _search_terms_for_contact(contact) if contact else [str(item["wxid"])],
+                },
+            )
+        )
+        sidecar_result = message_result.get("sidecar") or {}
+        verification_status = str(sidecar_result.get("verification_status") or "")
+        success = bool(sidecar_result.get("success")) and verification_status == "verified"
+        status = "sent" if success else "blocked" if verification_status == "blocked" else "failed"
+        reason = str(sidecar_result.get("message") or sidecar_result.get("failure_reason") or status)
+        task = message_result.get("task") or {}
+        evidence_path = _first_evidence_path(sidecar_result.get("evidence") or {})
+        updated = store.update_auto_reply_item(
+            str(item["id"]),
+            status=status,
+            reply_text=draft.reply_text,
+            intent_label=draft.intent_label,
+            handoff_required=False,
+            task_id=str(task.get("id") or ""),
+            evidence_path=evidence_path or "",
+        )
+        store.add_audit_log(
+            action="auto_reply.send",
+            target=str(item["wxid"]),
+            payload={"message_key": item["message_key"], "reply": draft.reply_text},
+            result=reason,
+            evidence_path=evidence_path,
+        )
+        results.append({"id": item["id"], "wxid": item["wxid"], "status": status, "reason": reason, "item": updated})
+        if _should_stop_touch_batch(sidecar_result):
+            break
+
+    remaining = len(store.list_auto_reply_items(statuses={"pending", "retry"}, limit=100000))
+    return {"processed": len(results), "remaining": remaining, "results": results}
+
+
 @app.post("/moments/publish-plans")
 def create_moments_publish_plan(plan: AutomationPlan) -> AutomationPlan:
     return store.upsert_plan(plan_type="moments_publish", name=plan.name, status=plan.status, payload=plan.payload)
@@ -459,16 +729,40 @@ def create_moments_marketing_plan(plan: AutomationPlan) -> AutomationPlan:
 
 @app.get("/moments/feed/scan")
 def scan_moments_feed() -> dict[str, object]:
-    return {"items": [], "message": "moments_feed_scan_requires_visible_feed"}
+    result = _sidecar_get("/wechat/moments/feed/scan")
+    evidence = result.get("evidence") or {}
+    for kind, path in evidence.items():
+        if isinstance(path, str) and (path.endswith(".png") or path.endswith(".txt")):
+            store.add_evidence_file(path=path, target_id="moments_feed", kind=str(kind))
+    return result
 
 
 @app.post("/moments/interactions/run")
 def run_moments_interactions(action: AutomationAction):
+    whitelist = {str(item).strip() for item in action.payload.get("whitelist") or [] if str(item).strip()}
+    if action.target_id not in whitelist:
+        store.add_audit_log(
+            action=action.action_type,
+            target=action.target_id,
+            payload={"whitelist_count": len(whitelist)},
+            result="moments_target_not_whitelisted",
+        )
+        return {
+            "success": False,
+            "message": "moments_target_not_whitelisted",
+            "verification_status": "blocked",
+            "failure_reason": "moments_target_not_whitelisted",
+        }
     result = _sidecar_post(
         "/wechat/moments/comment" if action.action_type == "moments.comment" else "/wechat/moments/like",
         {"action_type": action.action_type, "target_id": action.target_id, "payload": action.payload},
     )
-    store.add_audit_log(action=action.action_type, target=action.target_id, payload=action.payload, result=str(result.get("message")))
+    evidence = result.get("evidence") or {}
+    evidence_path = _first_evidence_path(evidence)
+    for kind, path in evidence.items():
+        if isinstance(path, str) and (path.endswith(".png") or path.endswith(".txt")):
+            store.add_evidence_file(path=path, target_id=action.target_id, kind=str(kind))
+    store.add_audit_log(action=action.action_type, target=action.target_id, payload=action.payload, result=str(result.get("message")), evidence_path=evidence_path)
     return result
 
 
@@ -619,6 +913,13 @@ def _search_terms_for_target(target_id: str, payload: dict[str, Any]) -> list[st
         if target_id in {contact.id, contact.wxid, contact.raw_wxid}:
             return _search_terms_for_contact(contact)
     return [target_id]
+
+
+def _find_contact_for_wxid(wxid: str, contacts: list[Any]) -> Any | None:
+    for contact in contacts:
+        if wxid in {getattr(contact, "id", ""), getattr(contact, "wxid", ""), getattr(contact, "raw_wxid", "")}:
+            return contact
+    return None
 
 
 def _should_stop_touch_batch(sidecar_result: dict[str, object]) -> bool:

@@ -68,6 +68,25 @@ class MessageRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
+class AutoReplyQueueRow(Base):
+    __tablename__ = "auto_reply_queue"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    message_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    contact_id: Mapped[str] = mapped_column(String, default="", index=True)
+    wxid: Mapped[str] = mapped_column(String, index=True)
+    inbound_text: Mapped[str] = mapped_column(Text)
+    inbound_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    reply_text: Mapped[str] = mapped_column(Text, default="")
+    intent_label: Mapped[str] = mapped_column(String, default="")
+    handoff_required: Mapped[int] = mapped_column(Integer, default=0)
+    handoff_reason: Mapped[str] = mapped_column(Text, default="")
+    task_id: Mapped[str] = mapped_column(String, default="")
+    evidence_path: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
 class AutomationPlanRow(Base):
     __tablename__ = "automation_plans"
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -334,6 +353,11 @@ class AgentStore:
             rows = session.scalars(query).all()
             return [self._contact(row) for row in rows]
 
+    def get_contact(self, contact_id: str) -> Contact | None:
+        with self.SessionLocal() as session:
+            row = session.get(ContactRow, contact_id)
+            return self._contact(row) if row else None
+
     def set_contact_touch_confirmation(self, contact_id: str, *, confirmed: bool) -> Contact:
         with self.SessionLocal() as session:
             row = session.get(ContactRow, contact_id)
@@ -400,6 +424,71 @@ class AgentStore:
         with self.SessionLocal() as session:
             row = session.scalar(select(AIProfileRow).order_by(AIProfileRow.created_at.desc()).limit(1))
             return self._profile(row) if row else None
+
+    def upsert_auto_reply_item(
+        self,
+        *,
+        message_key: str,
+        wxid: str,
+        inbound_text: str,
+        inbound_created_at: datetime,
+        contact_id: str = "",
+    ) -> dict:
+        with self.SessionLocal() as session:
+            row = session.scalar(select(AutoReplyQueueRow).where(AutoReplyQueueRow.message_key == message_key))
+            if row is None:
+                row = AutoReplyQueueRow(
+                    id=str(uuid4()),
+                    message_key=message_key,
+                    wxid=wxid,
+                    inbound_text=inbound_text,
+                    inbound_created_at=inbound_created_at,
+                    contact_id=contact_id,
+                )
+                session.add(row)
+            session.commit()
+            return self._auto_reply_item(row)
+
+    def list_auto_reply_items(self, *, statuses: set[str] | None = None, limit: int = 100) -> list[dict]:
+        with self.SessionLocal() as session:
+            query = select(AutoReplyQueueRow).order_by(text("rowid")).limit(limit)
+            if statuses:
+                query = query.where(AutoReplyQueueRow.status.in_(sorted(statuses)))
+            rows = session.scalars(query).all()
+            return [self._auto_reply_item(row) for row in rows]
+
+    def update_auto_reply_item(
+        self,
+        item_id: str,
+        *,
+        status: str,
+        reply_text: str = "",
+        intent_label: str = "",
+        handoff_required: bool | None = None,
+        handoff_reason: str = "",
+        task_id: str = "",
+        evidence_path: str = "",
+    ) -> dict:
+        with self.SessionLocal() as session:
+            row = session.get(AutoReplyQueueRow, item_id)
+            if row is None:
+                raise KeyError(item_id)
+            row.status = status
+            if reply_text:
+                row.reply_text = reply_text
+            if intent_label:
+                row.intent_label = intent_label
+            if handoff_required is not None:
+                row.handoff_required = 1 if handoff_required else 0
+            if handoff_reason:
+                row.handoff_reason = handoff_reason
+            if task_id:
+                row.task_id = task_id
+            if evidence_path:
+                row.evidence_path = evidence_path
+            row.updated_at = datetime.now(UTC)
+            session.commit()
+            return self._auto_reply_item(row)
 
     def create_task(self, *, action_type: str, target_id: str = "", status: TaskStatus = TaskStatus.pending) -> TaskRun:
         with self.SessionLocal() as session:
@@ -498,9 +587,81 @@ class AgentStore:
             if row is None:
                 row = PlanTargetRow(id=str(uuid4()), plan_id=plan_id, contact_id=contact_id)
                 session.add(row)
-            row.status = "touched"
+            row.status = "sent"
             row.last_touched_at = touched_at
+            row.skip_reason = ""
             session.commit()
+
+    def upsert_plan_target(
+        self,
+        *,
+        plan_id: str,
+        contact_id: str,
+        status: str,
+        skip_reason: str = "",
+        next_touch_at: datetime | None = None,
+        last_touched_at: datetime | None = None,
+    ) -> dict:
+        with self.SessionLocal() as session:
+            row = session.scalar(select(PlanTargetRow).where(PlanTargetRow.plan_id == plan_id, PlanTargetRow.contact_id == contact_id))
+            if row is None:
+                row = PlanTargetRow(id=str(uuid4()), plan_id=plan_id, contact_id=contact_id)
+                session.add(row)
+            row.status = status
+            row.skip_reason = skip_reason
+            row.next_touch_at = next_touch_at
+            if last_touched_at is not None:
+                row.last_touched_at = last_touched_at
+            session.commit()
+            return self._plan_target(row)
+
+    def update_plan_target_status(
+        self,
+        *,
+        plan_id: str,
+        contact_id: str,
+        status: str,
+        skip_reason: str = "",
+        next_touch_at: datetime | None = None,
+    ) -> dict:
+        return self.upsert_plan_target(
+            plan_id=plan_id,
+            contact_id=contact_id,
+            status=status,
+            skip_reason=skip_reason,
+            next_touch_at=next_touch_at,
+        )
+
+    def list_plan_targets(
+        self,
+        *,
+        plan_id: str,
+        statuses: set[str] | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        with self.SessionLocal() as session:
+            query = select(PlanTargetRow).where(PlanTargetRow.plan_id == plan_id).order_by(text("rowid")).limit(limit)
+            if statuses:
+                query = query.where(PlanTargetRow.status.in_(sorted(statuses)))
+            rows = session.scalars(query).all()
+            return [self._plan_target(row) for row in rows]
+
+    def plan_target_stats(self, plan_id: str) -> dict[str, int]:
+        stats: dict[str, int] = {}
+        for row in self.list_plan_targets(plan_id=plan_id, limit=100000):
+            status = str(row["status"])
+            stats[status] = stats.get(status, 0) + 1
+        return stats
+
+    def reset_running_plan_targets(self, plan_id: str) -> int:
+        with self.SessionLocal() as session:
+            rows = session.scalars(select(PlanTargetRow).where(PlanTargetRow.plan_id == plan_id, PlanTargetRow.status == "running")).all()
+            for row in rows:
+                row.status = "pending"
+                row.skip_reason = "recovered_after_restart"
+            if rows:
+                session.commit()
+            return len(rows)
 
     def cleanup_corrupt_plan_names(self) -> None:
         with self.SessionLocal() as session:
@@ -541,15 +702,7 @@ class AgentStore:
             row = session.scalar(select(PlanTargetRow).where(PlanTargetRow.plan_id == plan_id, PlanTargetRow.contact_id == contact_id))
             if row is None:
                 return None
-            return {
-                "id": row.id,
-                "plan_id": row.plan_id,
-                "contact_id": row.contact_id,
-                "status": row.status,
-                "last_touched_at": row.last_touched_at,
-                "next_touch_at": row.next_touch_at,
-                "skip_reason": row.skip_reason,
-            }
+            return self._plan_target(row)
 
     @staticmethod
     def _contact(row: ContactRow) -> Contact:
@@ -591,6 +744,18 @@ class AgentStore:
         )
 
     @staticmethod
+    def _plan_target(row: PlanTargetRow) -> dict:
+        return {
+            "id": row.id,
+            "plan_id": row.plan_id,
+            "contact_id": row.contact_id,
+            "status": row.status,
+            "last_touched_at": row.last_touched_at,
+            "next_touch_at": row.next_touch_at,
+            "skip_reason": row.skip_reason,
+        }
+
+    @staticmethod
     def _task(row: TaskRunRow) -> TaskRun:
         return TaskRun(
             id=row.id,
@@ -614,6 +779,26 @@ class AgentStore:
             evidence_path=row.evidence_path,
             created_at=row.created_at,
         )
+
+    @staticmethod
+    def _auto_reply_item(row: AutoReplyQueueRow) -> dict:
+        return {
+            "id": row.id,
+            "message_key": row.message_key,
+            "contact_id": row.contact_id,
+            "wxid": row.wxid,
+            "inbound_text": row.inbound_text,
+            "inbound_created_at": row.inbound_created_at,
+            "status": row.status,
+            "reply_text": row.reply_text,
+            "intent_label": row.intent_label,
+            "handoff_required": bool(row.handoff_required),
+            "handoff_reason": row.handoff_reason,
+            "task_id": row.task_id,
+            "evidence_path": row.evidence_path,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
 
     @staticmethod
     def _profile(row: AIProfileRow) -> dict:
