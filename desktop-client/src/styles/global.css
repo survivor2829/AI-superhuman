@@ -141,7 +141,7 @@ h2 {
 .primary-button:disabled,
 .danger-button:disabled,
 .ghost-button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.62;
 }
 
@@ -333,6 +333,29 @@ h2 {
 
 .summary-box strong {
   overflow-wrap: anywhere;
+}
+
+.readiness-list {
+  display: grid;
+  gap: 12px;
+}
+
+.readiness-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  color: #26364a;
+}
+
+.readiness-item svg {
+  color: #116329;
+  flex: 0 0 auto;
+}
+
+.blocked-callout {
+  border-color: #f7c6c7;
+  background: #fffafa;
 }
 
 .wide-button {

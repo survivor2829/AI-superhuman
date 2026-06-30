@@ -25,6 +25,14 @@ export type WindowProbe = {
   reason?: string;
 };
 
+export type SendDriverProbe = {
+  mode: string;
+  verified: boolean;
+  message: string;
+  capabilities: string[];
+  blocked_reason?: string;
+};
+
 export type Contact = {
   id: string;
   account_id: string;
@@ -174,6 +182,7 @@ export const api = {
   sidecarHealth: () => getJson<Health>(`${SIDECAR_URL}/health`),
   settings: () => getJson<Settings>(`${BACKEND_URL}/settings`),
   probe: () => getJson<WindowProbe>(`${BACKEND_URL}/wechat/window/probe`),
+  sendDriverProbe: () => getJson<SendDriverProbe>(`${BACKEND_URL}/send/driver/probe`),
   localAccounts: () => getJson<{ accounts: LocalWechatAccount[] }>(`${BACKEND_URL}/wechat/accounts/local`),
   contacts: () => getJson<Contact[]>(`${BACKEND_URL}/wechat/contacts`),
   syncContacts: () => postJson<ContactSyncResponse>(`${BACKEND_URL}/wechat/contacts/sync`, {

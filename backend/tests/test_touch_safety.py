@@ -153,6 +153,7 @@ def test_touch_run_sends_remark_nickname_alias_search_terms(monkeypatch, tmp_pat
         captured.append(payload)
         return {"success": False, "verification_status": "blocked", "message": "blocked_target_not_verified", "evidence": {}}
 
+    monkeypatch.setattr(main, "_sidecar_get", lambda path: {"mode": "non_screen", "verified": True, "message": "verified"})
     monkeypatch.setattr(main, "_sidecar_post", fake_sidecar_post)
 
     main.run_touch_plan("plan_search_terms", main.TouchRunRequest(limit=1, direct_send=True))
@@ -188,6 +189,7 @@ def test_touch_run_stops_batch_after_wechat_window_infrastructure_failure(monkey
             "evidence": {},
         }
 
+    monkeypatch.setattr(main, "_sidecar_get", lambda path: {"mode": "non_screen", "verified": True, "message": "verified"})
     monkeypatch.setattr(main, "_sidecar_post", fake_sidecar_post)
 
     response = main.run_touch_plan("plan_stop", main.TouchRunRequest(limit=2, direct_send=True))
@@ -195,3 +197,62 @@ def test_touch_run_stops_batch_after_wechat_window_infrastructure_failure(monkey
     assert len(calls) == 1
     assert response["ran"] == 1
     assert response["results"][0]["status"] == "blocked"
+
+
+def test_backend_exposes_send_driver_probe(monkeypatch):
+    import app.main as main
+
+    def fake_sidecar_get(path: str) -> dict:
+        assert path == "/send/driver/probe"
+        return {
+            "mode": "non_screen",
+            "verified": False,
+            "message": "非屏幕发送通道未验证，未执行发送",
+            "capabilities": ["contact_sync", "touch_preview", "audit_log"],
+        }
+
+    monkeypatch.setattr(main, "_sidecar_get", fake_sidecar_get)
+
+    result = main.send_driver_probe()
+
+    assert result["mode"] == "non_screen"
+    assert result["verified"] is False
+    assert result["message"] == "非屏幕发送通道未验证，未执行发送"
+
+
+def test_touch_run_blocks_before_creating_send_tasks_when_non_screen_driver_unverified(monkeypatch, tmp_path):
+    import app.main as main
+
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    _save_test_profile(store)
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "llm", FakeLLM())
+    store.upsert_synced_contacts(
+        account_id="wxid_local",
+        contacts=[
+            {"wxid": "wxid_1", "nickname": "客户1", "source": "wechat_local_contact_db", "local_type": 1, "contact_flag": 1, "delete_flag": 0},
+            {"wxid": "wxid_2", "nickname": "客户2", "source": "wechat_local_contact_db", "local_type": 1, "contact_flag": 1, "delete_flag": 0},
+        ],
+        auto_confirm=True,
+    )
+
+    sidecar_calls: list[str] = []
+
+    def fake_sidecar_get(path: str) -> dict:
+        assert path == "/send/driver/probe"
+        return {"mode": "non_screen", "verified": False, "message": "非屏幕发送通道未验证，未执行发送"}
+
+    def fake_sidecar_post(path: str, payload: dict) -> dict:
+        sidecar_calls.append(path)
+        return {"success": True, "verification_status": "verified", "message": "should_not_send", "evidence": {}}
+
+    monkeypatch.setattr(main, "_sidecar_get", fake_sidecar_get)
+    monkeypatch.setattr(main, "_sidecar_post", fake_sidecar_post)
+
+    response = main.run_touch_plan("plan_blocked", main.TouchRunRequest(limit=2, direct_send=True))
+
+    assert response["ran"] == 0
+    assert response["message"] == "非屏幕发送通道未验证，未执行发送"
+    assert sidecar_calls == []
+    assert store.list_tasks() == []

@@ -359,6 +359,15 @@ class RealAutomationDriver:
     def sync_contacts(self, *, account_id: str = "auto", auto_decrypt: bool = True) -> dict[str, object]:
         return self.local_contact_extractor.sync_contacts(account_id=account_id, auto_decrypt=auto_decrypt)
 
+    def send_driver_probe(self) -> dict[str, object]:
+        return {
+            "mode": "non_screen",
+            "verified": False,
+            "message": "非屏幕发送通道未验证，未执行发送",
+            "capabilities": ["contact_sync", "touch_preview", "audit_log"],
+            "blocked_reason": "non_screen_send_driver_not_verified",
+        }
+
     def send_message(self, *, target_id: str, content: str, search_terms: list[str] | None = None) -> LocalActionResult:
         evidence: dict[str, Any] = {}
         probe = self.probe_driver.probe()

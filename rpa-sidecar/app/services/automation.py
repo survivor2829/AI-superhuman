@@ -67,6 +67,17 @@ class WeixinAutomationDriver:
             "activation_status": status.activation_status,
         }
 
+    def send_driver_probe(self) -> dict[str, object]:
+        if self.dry_run:
+            return {
+                "mode": "dry_run",
+                "verified": False,
+                "message": "非屏幕发送通道未验证，未执行发送",
+                "capabilities": ["contact_sync", "touch_preview", "audit_log"],
+                "blocked_reason": "non_screen_send_driver_not_verified",
+            }
+        return self.real_driver.send_driver_probe()
+
     def local_accounts(self) -> list[dict[str, object]]:
         if self.dry_run:
             return []
@@ -89,6 +100,19 @@ class WeixinAutomationDriver:
         if self.dry_run:
             return self.dry_driver.execute(action)
         if action.action_type == "message.send":
+            send_probe = self.send_driver_probe()
+            if not bool(send_probe.get("verified")):
+                return LocalActionResult(
+                    success=False,
+                    message="非屏幕发送通道未验证，未执行发送",
+                    dry_run=False,
+                    evidence={
+                        "blocked_reason": "non_screen_send_driver_not_verified",
+                        "send_driver": send_probe,
+                    },
+                    verification_status="blocked",
+                    failure_reason=str(send_probe.get("message") or "非屏幕发送通道未验证，未执行发送"),
+                )
             return self.real_driver.send_message(
                 target_id=action.target_id,
                 content=str(action.payload.get("content") or ""),

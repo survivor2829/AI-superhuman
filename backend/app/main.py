@@ -145,6 +145,11 @@ def window_probe() -> dict[str, object]:
     return _sidecar_get("/wechat/window/probe")
 
 
+@app.get("/send/driver/probe")
+def send_driver_probe() -> dict[str, object]:
+    return _sidecar_get("/send/driver/probe")
+
+
 @app.get("/wechat/accounts/local")
 def local_wechat_accounts() -> dict[str, object]:
     return _sidecar_get("/wechat/accounts/local")
@@ -279,6 +284,16 @@ def create_touch_plan(request: TouchPlanCreateRequest) -> AutomationPlan:
 
 @app.post("/touch/plans/{plan_id}/run")
 def run_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
+    send_probe = send_driver_probe()
+    if not bool(send_probe.get("verified")):
+        return {
+            "plan_id": plan_id,
+            "ran": 0,
+            "results": [],
+            "message": str(send_probe.get("message") or "非屏幕发送通道未验证，未执行发送"),
+            "send_driver": send_probe,
+        }
+
     planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
     contacts = store.list_contacts(
         limit=request.limit,

@@ -37,6 +37,11 @@ def window_probe() -> dict[str, object]:
     return driver.probe()
 
 
+@app.get("/send/driver/probe")
+def send_driver_probe() -> dict[str, object]:
+    return driver.send_driver_probe()
+
+
 @app.get("/wechat/accounts/local")
 def local_accounts() -> dict[str, object]:
     return {"accounts": driver.local_accounts()}

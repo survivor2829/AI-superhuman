@@ -1,11 +1,19 @@
 from pathlib import Path
 
+import pytest
+
 from app.services.weixin_driver import (
+    BlockedSend,
     EvidenceRecorder,
     RealAutomationDriver,
     SearchResultInspector,
     WindowProbeDriver,
 )
+
+
+class FakeWindow:
+    def set_focus(self) -> None:
+        return None
 
 
 def test_window_probe_driver_detects_weixin_process_from_provider():
@@ -167,3 +175,21 @@ def test_search_result_inspector_accepts_single_chat_or_contact_match():
 
     assert decision.allowed is True
     assert decision.matched_target == "A测试客户"
+
+
+def test_real_driver_blocks_when_search_input_missing_without_screen_fallback(tmp_path, monkeypatch):
+    import pywinauto.keyboard
+
+    probe = WindowProbeDriver(process_provider=lambda: [])
+    driver = RealAutomationDriver(
+        probe_driver=probe,
+        evidence_recorder=EvidenceRecorder(tmp_path, screenshot_provider=lambda path: False),
+        human_pause_seconds=(0, 0),
+    )
+    monkeypatch.setattr(pywinauto.keyboard, "send_keys", lambda *args, **kwargs: None)
+    monkeypatch.setattr(driver, "_connect_window", lambda: FakeWindow())
+    monkeypatch.setattr(driver, "_find_chat_search_edit", lambda window: None)
+
+    with pytest.raises(BlockedSend) as exc:
+        driver._send_via_pywinauto(target_id="A测试客户", content="这是测试说明：您好", evidence={}, search_terms=["A测试客户"])
+    assert exc.value.reason == "blocked_search_input_missing"
