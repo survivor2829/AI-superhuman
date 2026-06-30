@@ -72,6 +72,35 @@
   - 联系人模块出现 `scroll_contact_action`、`SendKeys`、`Click`
 - 这说明原执行层高度依赖 UIA、窗口、截图、OCR 和点击类动作；它不是当前要求的“完全非屏幕发送”路线。
 
+## 阶段三：本地服务与任务状态合同
+
+本轮增强扫描器后，已经能读取 Python 侧车的代码常量表。通俗讲，不是只看“文件名”，而是能看到它内部写死的一部分路由名、事件名、任务状态名。
+
+- 已还原出本地任务上报接口语义：
+  - `/api/client/task/poll`
+  - `/api/client/task/ack`
+  - `/api/client/task/heartbeat`
+  - `/api/client/task/pause`
+  - `/api/client/task/progress`
+  - `/api/client/task/complete`
+- 已观察到 WS/任务事件语义：
+  - `task.dispatch`
+  - `task.paused`
+  - `client_id`
+  - `message_type`
+  - `progress`
+  - `callback`
+- 已观察到可复刻的任务治理思路：
+  - 任务轮询、确认、心跳、进度、完成上报。
+  - 全局暂停、云端任务抢占、本地任务暂停同步。
+  - 失败数、待处理数、进度百分比、失败原因等任务字段。
+- 仍然没有发现合格的非屏幕发送 receipt：
+  - `MassSendWechatManagerV2` 仍出现 `WechatOcrService`、`input_msg`。
+  - `WechatAutomation` 仍出现 `uiautomation`、`MoveWindow`、`Click`、`get_wx_controls`。
+  - 朋友圈相关模块仍出现 `safe_click`、`screenshot_click_area`、`screenshot_wechat_area`。
+
+结论：任务系统的“管理方式”可以 clean-room 复刻；真正执行微信动作的“发送方式”仍不符合非屏幕路线，不能开放自动发送。
+
 ## 数据流判断
 
 ```mermaid
@@ -85,13 +114,13 @@ flowchart LR
   G --> H["UIA / OCR / 截图 / 点击 / 输入"]
 ```
 
-当前能安全复刻的是 D 侧的业务编排模型和 E 侧的任务状态机；H 侧不符合非屏幕发送目标。
+当前能安全复刻的是 D 侧的业务编排模型和 E 侧的任务状态机。尤其是任务轮询、确认、心跳、进度、完成、暂停这些状态语义可以迁移到我们自己的后端；H 侧不符合非屏幕发送目标。
 
 ## 候选通道矩阵
 
 | 候选通道 | 当前状态 | 是否能发送 | 是否可用于当前产品 | 依据 | 下一步 |
 | --- | --- | --- | --- | --- | --- |
-| `dt-ai-helper` 本地服务合同 | 研究中 | 否 | 暂不可用 | 已确认本地侧车含任务调度和自动化模块，但关键执行证据指向 UIA/OCR/截图/点击，没有发现非屏幕 receipt | 继续还原本地 Flask/WS 路由，只做 no-send 探针 |
+| `dt-ai-helper` 本地服务合同 | 研究中 | 否 | 暂不可用 | 已确认本地侧车含任务调度、WS 事件和自动化模块；任务状态语义可复刻，但关键执行证据仍指向 UIA/OCR/截图/点击，没有发现非屏幕 receipt | 复刻任务治理模型，继续保持 no-send 探针 |
 | 微信本地数据 / IPC / 进程通道 | 未验证 | 否 | 暂不可用 | 目前本地库路线只证明能做通讯录同步；没有证明写库或进程通道可以安全触发消息发送 | 只研究可读账本、可验证回执来源，不写入微信数据库 |
 | 参考项目 `-RPAagent` 安全边界 | 仅参考 | 否 | 可复用安全规则 | 可复用白名单、限额、审计、单人 live gate；不能复用屏幕点击发送路线 | 把安全门控保留在当前产品中，等待真实非屏幕通道 |
 

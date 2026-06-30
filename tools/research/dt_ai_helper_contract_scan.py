@@ -5,6 +5,7 @@ import json
 import marshal
 import re
 import struct
+import types
 import zlib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +61,23 @@ SELECTED_PYZ_MODULES = (
     "scripts.wechat.ContactManager",
     "scripts.http.wechat_api",
     "scripts.ws.automation_control",
+)
+CONTRACT_PYZ_MODULE_PREFIXES = (
+    "scripts.http.",
+    "scripts.ws.",
+    "scripts.task.",
+    "scripts.automation.",
+    "scripts.wechat.",
+    "scripts.wechat_ocr.",
+)
+STATUS_RE = re.compile(
+    r"(?i)(pending|running|success|succeed|failed|blocked|paused|cancel|stopped|dispatch|progress|client_lost|waiting|completed|taskstatus)"
+)
+EVENT_RE = re.compile(
+    r"(?i)(task[._:-]|message[._:-]|client[._:-]|automation[._:-]|progress|heartbeat|connect|disconnect|pause|resume|callback|notify|event)"
+)
+SCREEN_AUTOMATION_RE = re.compile(
+    r"(?i)(uiautomation|ocr|screenshot|click|sendkeys|movewindow|input_msg|wechatocr|safe_click|window_handle|get_wx_controls)"
 )
 
 
@@ -147,6 +165,55 @@ def matching_strings(strings: Iterable[str], pattern: re.Pattern[str], *, limit:
         for match in pattern.finditer(value):
             matches.append(match.group(0))
     return unique_limited(matches, limit=limit)
+
+
+def walk_code_objects(code: types.CodeType) -> Iterable[types.CodeType]:
+    yield code
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            yield from walk_code_objects(const)
+
+
+def string_constants_from_code(code: types.CodeType) -> tuple[list[str], list[str], list[str]]:
+    strings: list[str] = []
+    names: list[str] = []
+    code_object_names: list[str] = []
+    for item in walk_code_objects(code):
+        code_object_names.append(item.co_name)
+        names.extend(str(name) for name in item.co_names if isinstance(name, str))
+        for const in item.co_consts:
+            if isinstance(const, str):
+                strings.append(const)
+    return strings, names, code_object_names
+
+
+def summarize_module_contract(module_data: bytes) -> dict[str, object]:
+    try:
+        code = marshal.loads(module_data)
+    except Exception as exc:
+        return {"marshal_parse_error": type(exc).__name__}
+    if not isinstance(code, types.CodeType):
+        return {"marshal_type": type(code).__name__}
+
+    strings, names, code_object_names = string_constants_from_code(code)
+    text_pool = strings + names
+    slash_constants = [value for value in strings if value.startswith("/") and 3 <= len(value) <= 180]
+    interesting_names = [
+        value
+        for value in names
+        if any(term in value.lower() for term in ("route", "task", "event", "send", "message", "contact", "moment", "wechat", "status", "pause", "resume"))
+    ]
+    return {
+        "code_objects": unique_limited(code_object_names, limit=70),
+        "interesting_names": unique_limited(interesting_names, limit=90),
+        "route_constants": unique_limited(slash_constants + matching_strings(strings, ROUTE_RE, limit=80), limit=90),
+        "local_urls": matching_strings(strings, LOCAL_URL_RE, limit=30),
+        "task_status_terms": unique_limited([value for value in text_pool if STATUS_RE.search(value)], limit=90),
+        "event_terms": unique_limited([value for value in text_pool if EVENT_RE.search(value)], limit=90),
+        "send_terms": matching_strings(text_pool, SEND_RE, limit=80),
+        "screen_automation_terms": unique_limited([value for value in text_pool if SCREEN_AUTOMATION_RE.search(value)], limit=80),
+        "interesting_constants": unique_limited([value for value in strings if is_interesting(value)], limit=80),
+    }
 
 
 def asar_list(asar_path: Path) -> list[str]:
@@ -272,7 +339,12 @@ def parse_pyinstaller_archive(exe_path: Path) -> dict[str, object]:
         )
         cursor += entry_len
 
-    pyz_summary: dict[str, object] = {"module_count": 0, "interesting_modules": [], "selected_module_terms": {}}
+    pyz_summary: dict[str, object] = {
+        "module_count": 0,
+        "interesting_modules": [],
+        "selected_module_terms": {},
+        "module_contracts": {},
+    }
     pyz_entry = next((entry for entry in carchive_entries if entry["name"] == "PYZ.pyz"), None)
     if pyz_entry:
         pyz = data[pkg_start + int(pyz_entry["offset"]) : pkg_start + int(pyz_entry["offset"]) + int(pyz_entry["compressed_len"])]
@@ -287,7 +359,13 @@ def parse_pyinstaller_archive(exe_path: Path) -> dict[str, object]:
                 and any(term in name.lower() for term in ("wechat", "send", "moment", "contact", "automation", "message", "ws", "http", "db", "task"))
             ]
             selected_terms: dict[str, list[str]] = {}
-            for module_name in SELECTED_PYZ_MODULES:
+            module_contracts: dict[str, object] = {}
+            contract_modules = [
+                name
+                for name in sorted(module_index)
+                if name in SELECTED_PYZ_MODULES or any(name.startswith(prefix) for prefix in CONTRACT_PYZ_MODULE_PREFIXES)
+            ]
+            for module_name in contract_modules:
                 entry = module_index.get(module_name)
                 if not entry:
                     continue
@@ -304,12 +382,28 @@ def parse_pyinstaller_archive(exe_path: Path) -> dict[str, object]:
                         for term in ("send", "wechat", "message", "contact", "moment", "window", "uia", "ocr", "click", "input", "receipt", "chat", "wx")
                     )
                 ]
-                selected_terms[module_name] = unique_limited(module_strings, limit=40)
+                if module_name in SELECTED_PYZ_MODULES:
+                    selected_terms[module_name] = unique_limited(module_strings, limit=40)
+                contract = summarize_module_contract(module_data)
+                has_signal = any(
+                    contract.get(key)
+                    for key in (
+                        "route_constants",
+                        "task_status_terms",
+                        "event_terms",
+                        "send_terms",
+                        "screen_automation_terms",
+                    )
+                )
+                if has_signal or module_name in SELECTED_PYZ_MODULES or module_name.startswith(("scripts.http.", "scripts.ws.", "scripts.task.")):
+                    module_contracts[module_name] = contract
             pyz_summary = {
                 "module_count": len(module_index),
                 "interesting_modules": interesting_modules[:240],
                 "interesting_module_count": len(interesting_modules),
                 "selected_module_terms": selected_terms,
+                "module_contracts": module_contracts,
+                "module_contract_count": len(module_contracts),
             }
         except Exception as exc:
             pyz_summary = {"parse_error": type(exc).__name__}
