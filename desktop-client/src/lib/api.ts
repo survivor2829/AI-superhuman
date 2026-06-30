@@ -31,6 +31,25 @@ export type SendDriverProbe = {
   message: string;
   capabilities: string[];
   blocked_reason?: string;
+  research_report_path?: string;
+  last_verified_at?: string | null;
+  last_receipt?: {
+    receipt_id?: string;
+    channel_id?: string;
+    target_id?: string;
+    verified_at?: string;
+  } | null;
+  candidates?: SendDriverCandidate[];
+};
+
+export type SendDriverCandidate = {
+  id: string;
+  label: string;
+  status: string;
+  can_send: boolean;
+  requires_login_window?: boolean;
+  evidence?: string;
+  next_step?: string;
 };
 
 export type Contact = {

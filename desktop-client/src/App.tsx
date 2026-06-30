@@ -71,6 +71,14 @@ const REASON_LABELS: Record<string, string> = {
   failed_message_not_verified: "发送后未核验到消息"
 };
 
+const DRIVER_STATUS_LABELS: Record<string, string> = {
+  research_only: "研究中",
+  not_verified: "未验证",
+  reference_only: "仅参考",
+  verified: "已验证",
+  blocked: "已阻断"
+};
+
 function stateFromHealth(health: Health | null, error: string | null): ServiceState {
   if (error) return "offline";
   if (!health) return "checking";
@@ -238,6 +246,7 @@ export function App() {
   const promptReady = Boolean(promptInfo) || Boolean(settings?.deepseek_api_key_configured);
   const canAutoSend = sendDriverProbe?.verified === true;
   const sendBlockedMessage = sendDriverProbe?.message || "非屏幕发送通道未验证，未执行发送";
+  const sendDriverCandidates = sendDriverProbe?.candidates || [];
 
   const steps = CUSTOMER_STEPS.map((step) => {
     if (step === "连接微信") return { label: step, done: serviceReady && wechatReady };
@@ -400,6 +409,20 @@ export function App() {
               <div className="panel-title"><h2>暂不可自动发送</h2><MiniStatus ok={canAutoSend} text={canAutoSend ? "已验证" : "未验证"} /></div>
               <p className="plain-copy">{canAutoSend ? "非屏幕发送通道已验证，可以执行小批量发送。" : sendBlockedMessage}</p>
               {!canAutoSend && <p className="muted">当前不会点击微信、不会输入消息、不会移动窗口。你可以先生成预览，等非屏幕发送通道验证后再恢复自动发送。</p>}
+              <div className="driver-progress">
+                <strong>通道研究进度</strong>
+                {sendDriverCandidates.length === 0 ? (
+                  <p className="muted">暂未拿到研究状态，请刷新页面。</p>
+                ) : sendDriverCandidates.map((candidate) => (
+                  <div className="driver-progress-item" key={candidate.id}>
+                    <div>
+                      <span>{candidate.label}</span>
+                      <p>{candidate.evidence || "尚未完成验证"}</p>
+                    </div>
+                    <b>{candidate.can_send ? "可发送" : DRIVER_STATUS_LABELS[candidate.status] || "未验证"}</b>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="panel table-panel">
               <div className="panel-title"><h2>发送预览</h2><span className="muted">发送前先看名单</span></div>

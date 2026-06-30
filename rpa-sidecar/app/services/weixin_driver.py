@@ -42,6 +42,53 @@ class SearchResolution:
     matched_target: str = ""
 
 
+AGENT_ROOT = Path(__file__).resolve().parents[3]
+NON_SCREEN_SEND_MESSAGE = "非屏幕发送通道未验证，未执行发送"
+NON_SCREEN_SEND_BLOCKED_REASON = "non_screen_send_driver_not_verified"
+
+
+def build_non_screen_send_driver_probe(*, mode: str = "non_screen") -> dict[str, object]:
+    return {
+        "mode": mode,
+        "verified": False,
+        "message": NON_SCREEN_SEND_MESSAGE,
+        "capabilities": ["contact_sync", "touch_preview", "audit_log"],
+        "blocked_reason": NON_SCREEN_SEND_BLOCKED_REASON,
+        "research_report_path": str(AGENT_ROOT / "docs" / "non-screen-send-research.md"),
+        "last_verified_at": None,
+        "last_receipt": None,
+        "candidates": [
+            {
+                "id": "dt_ai_helper_local_service",
+                "label": "dt-ai-helper 本地服务合同",
+                "status": "research_only",
+                "can_send": False,
+                "requires_login_window": True,
+                "evidence": "静态分析看到本地侧车和微信图标模板，尚未发现可验证的非屏幕发送回执。",
+                "next_step": "继续还原本地路由和 IPC 合同，只做不发送探针。",
+            },
+            {
+                "id": "wechat_local_data_ipc",
+                "label": "微信本地数据 / IPC / 进程通道",
+                "status": "not_verified",
+                "can_send": False,
+                "requires_login_window": True,
+                "evidence": "本地库路线已能服务通讯录同步；尚未证明写库或进程通道可以安全触发消息发送。",
+                "next_step": "只研究只读账本、可验证 IPC 和回执来源，不写入微信数据库。",
+            },
+            {
+                "id": "rpaagent_safety_boundary",
+                "label": "参考项目安全边界",
+                "status": "reference_only",
+                "can_send": False,
+                "requires_login_window": False,
+                "evidence": "可复用限额、白名单、审计、单人 live gate 思路；不复用屏幕点击发送实现。",
+                "next_step": "把安全门控保留在当前产品中，等待真正非屏幕通道验证。",
+            },
+        ],
+    }
+
+
 class BlockedSend(RuntimeError):
     def __init__(self, reason: str, *, opened_title: str = "", matched_target: str = "") -> None:
         super().__init__(reason)
@@ -360,13 +407,7 @@ class RealAutomationDriver:
         return self.local_contact_extractor.sync_contacts(account_id=account_id, auto_decrypt=auto_decrypt)
 
     def send_driver_probe(self) -> dict[str, object]:
-        return {
-            "mode": "non_screen",
-            "verified": False,
-            "message": "非屏幕发送通道未验证，未执行发送",
-            "capabilities": ["contact_sync", "touch_preview", "audit_log"],
-            "blocked_reason": "non_screen_send_driver_not_verified",
-        }
+        return build_non_screen_send_driver_probe()
 
     def send_message(self, *, target_id: str, content: str, search_terms: list[str] | None = None) -> LocalActionResult:
         evidence: dict[str, Any] = {}

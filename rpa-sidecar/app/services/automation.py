@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.services.guardrails import LocalAction, LocalActionResult
-from app.services.weixin_driver import RealAutomationDriver
+from app.services.weixin_driver import RealAutomationDriver, build_non_screen_send_driver_probe
 
 
 class DryRunAutomationDriver:
@@ -69,13 +69,7 @@ class WeixinAutomationDriver:
 
     def send_driver_probe(self) -> dict[str, object]:
         if self.dry_run:
-            return {
-                "mode": "dry_run",
-                "verified": False,
-                "message": "非屏幕发送通道未验证，未执行发送",
-                "capabilities": ["contact_sync", "touch_preview", "audit_log"],
-                "blocked_reason": "non_screen_send_driver_not_verified",
-            }
+            return build_non_screen_send_driver_probe(mode="dry_run")
         return self.real_driver.send_driver_probe()
 
     def local_accounts(self) -> list[dict[str, object]]:

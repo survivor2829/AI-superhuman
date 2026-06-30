@@ -358,6 +358,48 @@ h2 {
   background: #fffafa;
 }
 
+.driver-progress {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #f4d6d6;
+}
+
+.driver-progress > strong {
+  font-size: 14px;
+}
+
+.driver-progress-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid #f3dcdc;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.driver-progress-item span {
+  display: block;
+  font-weight: 700;
+  color: #26364a;
+  margin-bottom: 4px;
+}
+
+.driver-progress-item p {
+  color: #68778d;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.driver-progress-item b {
+  color: #9f1239;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .wide-button {
   width: 100%;
 }
