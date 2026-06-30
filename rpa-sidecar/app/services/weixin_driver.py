@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import ctypes
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,32 @@ from uuid import uuid4
 
 from app.services.guardrails import LocalActionResult
 from app.services.local_contacts import WechatLocalContactExtractor
+
+
+_DPI_AWARENESS_ATTEMPTED = False
+
+
+def ensure_process_dpi_awareness() -> None:
+    global _DPI_AWARENESS_ATTEMPTED
+    if _DPI_AWARENESS_ATTEMPTED:
+        return
+    _DPI_AWARENESS_ATTEMPTED = True
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)
@@ -343,6 +370,7 @@ class WindowProbeDriver:
 
     @staticmethod
     def _default_process_provider() -> list[dict[str, Any]]:
+        ensure_process_dpi_awareness()
         try:
             import win32gui
             import win32process
@@ -726,6 +754,7 @@ class RealAutomationDriver:
 
     @staticmethod
     def _default_window_activator(status: WindowProbeStatus) -> tuple[bool, str]:
+        ensure_process_dpi_awareness()
         if not status.hwnd:
             return False, "wechat_hwnd_missing"
         try:
@@ -755,6 +784,7 @@ class RealAutomationDriver:
         return False, "foreground_not_changed"
 
     def _normalize_window(self, status: WindowProbeStatus) -> tuple[bool, str]:
+        ensure_process_dpi_awareness()
         if not status.hwnd:
             return False, "wechat_hwnd_missing"
         try:
@@ -769,9 +799,22 @@ class RealAutomationDriver:
             time.sleep(0.2)
             win32gui.MoveWindow(status.hwnd, 0, 0, width, height, True)
             time.sleep(0.2)
-            win32gui.SetForegroundWindow(status.hwnd)
+            try:
+                win32gui.RedrawWindow(
+                    status.hwnd,
+                    None,
+                    None,
+                    win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN | win32con.RDW_FRAME,
+                )
+            except Exception:
+                pass
+            foreground_status = "foreground_set"
+            try:
+                win32gui.SetForegroundWindow(status.hwnd)
+            except Exception as exc:
+                foreground_status = f"foreground_set_failed:{type(exc).__name__}"
             time.sleep(0.2)
-            return True, "window_normalized"
+            return True, "window_normalized" if foreground_status == "foreground_set" else f"window_normalized:{foreground_status}"
         except Exception as exc:
             return False, f"window_normalize_failed:{type(exc).__name__}"
 
