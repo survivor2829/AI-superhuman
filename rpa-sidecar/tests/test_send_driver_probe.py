@@ -87,3 +87,5 @@ def test_real_driver_probe_lists_research_candidates(tmp_path):
     }
     assert all(candidate["can_send"] is False for candidate in result["candidates"])
     assert str(result["research_report_path"]).endswith("docs\\non-screen-send-research.md")
+    assert result["research_artifacts"][0]["kind"] == "contract_scan"
+    assert str(result["research_artifacts"][0]["path"]).endswith("docs\\research\\dt-ai-helper-contract-scan.json")

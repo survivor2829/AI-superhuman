@@ -32,6 +32,11 @@ export type SendDriverProbe = {
   capabilities: string[];
   blocked_reason?: string;
   research_report_path?: string;
+  research_artifacts?: Array<{
+    kind: string;
+    path: string;
+    available: boolean;
+  }>;
   last_verified_at?: string | null;
   last_receipt?: {
     receipt_id?: string;

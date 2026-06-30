@@ -55,6 +55,13 @@ def build_non_screen_send_driver_probe(*, mode: str = "non_screen") -> dict[str,
         "capabilities": ["contact_sync", "touch_preview", "audit_log"],
         "blocked_reason": NON_SCREEN_SEND_BLOCKED_REASON,
         "research_report_path": str(AGENT_ROOT / "docs" / "non-screen-send-research.md"),
+        "research_artifacts": [
+            {
+                "kind": "contract_scan",
+                "path": str(AGENT_ROOT / "docs" / "research" / "dt-ai-helper-contract-scan.json"),
+                "available": (AGENT_ROOT / "docs" / "research" / "dt-ai-helper-contract-scan.json").exists(),
+            }
+        ],
         "last_verified_at": None,
         "last_receipt": None,
         "candidates": [
@@ -64,8 +71,8 @@ def build_non_screen_send_driver_probe(*, mode: str = "non_screen") -> dict[str,
                 "status": "research_only",
                 "can_send": False,
                 "requires_login_window": True,
-                "evidence": "静态分析看到本地侧车和微信图标模板，尚未发现可验证的非屏幕发送回执。",
-                "next_step": "继续还原本地路由和 IPC 合同，只做不发送探针。",
+                "evidence": "已解析 Electron API 字典和 PyInstaller 模块表；关键执行模块指向 UIA/OCR/截图/点击，尚未发现非屏幕发送回执。",
+                "next_step": "继续只读还原本地 Flask/WS 路由和任务回执字段，不调用疑似发送接口。",
             },
             {
                 "id": "wechat_local_data_ipc",
