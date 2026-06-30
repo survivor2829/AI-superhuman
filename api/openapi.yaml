@@ -1,0 +1,111 @@
+openapi: 3.1.0
+info:
+  title: Agent Production API
+  version: 0.2.0
+servers:
+  - url: http://127.0.0.1:8710
+paths:
+  /health:
+    get:
+      summary: Backend health
+      responses:
+        "200": { description: OK }
+  /settings:
+    get:
+      summary: Public runtime settings without secrets
+      responses:
+        "200": { description: OK }
+  /prompts/import-docx:
+    post:
+      summary: Import the configured DOCX prompt into the AI profile store
+      responses:
+        "200": { description: Imported profile summary }
+  /ai/reply:
+    post:
+      summary: Generate a structured AI reply using DeepSeek
+      responses:
+        "200": { description: Structured reply draft }
+  /chat/ai-reply:
+    post:
+      summary: Compatibility alias for AI reply
+      responses:
+        "200": { description: Structured reply draft }
+  /wechat/status:
+    get:
+      summary: Get sidecar WeChat status
+      responses:
+        "200": { description: Status }
+  /wechat/window/probe:
+    get:
+      summary: Detect personal WeChat process and main window
+      responses:
+        "200": { description: Probe result }
+  /wechat/contacts/sync:
+    post:
+      summary: Sync visible contacts from the local sidecar
+      responses:
+        "200": { description: Saved contacts }
+  /wechat/contacts:
+    get:
+      summary: List persisted contacts
+      responses:
+        "200": { description: Contacts }
+  /wechat/message/send:
+    post:
+      summary: Send a guarded WeChat message through the sidecar
+      responses:
+        "200": { description: Task and sidecar result }
+  /touch/plans:
+    get:
+      summary: List small-batch touch plans
+      responses:
+        "200": { description: Plans }
+    post:
+      summary: Create a small-batch touch plan
+      responses:
+        "200": { description: Plan }
+  /touch/plans/{plan_id}/run:
+    post:
+      summary: Run a small-batch touch plan against synced contacts
+      parameters:
+        - in: path
+          name: plan_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Run result }
+  /moments/feed/scan:
+    get:
+      summary: Scan visible Moments feed
+      responses:
+        "200": { description: Feed items or blocked reason }
+  /moments/interactions/run:
+    post:
+      summary: Run a guarded Moments like/comment action
+      responses:
+        "200": { description: Sidecar result }
+  /tasks:
+    get:
+      summary: List persisted task runs
+      responses:
+        "200": { description: Tasks }
+  /tasks/events:
+    get:
+      summary: List task events
+      responses:
+        "200": { description: Events }
+  /evidence/files:
+    get:
+      summary: List evidence files
+      responses:
+        "200": { description: Evidence files }
+  /audit/logs:
+    get:
+      summary: List audit logs
+      responses:
+        "200": { description: Audit logs }
+  /ws/tasks:
+    get:
+      summary: WebSocket task event snapshot
+      responses:
+        "101": { description: WebSocket upgrade }

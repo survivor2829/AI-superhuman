@@ -1,0 +1,8 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.8.0
+pytest>=8.2.0
+pywin32>=306; platform_system == "Windows"
+Pillow>=10.4.0
+opencv-python>=4.10.0.84
+pywinauto>=0.6.8; platform_system == "Windows"
