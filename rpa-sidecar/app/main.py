@@ -37,9 +37,19 @@ def window_probe() -> dict[str, object]:
     return driver.probe()
 
 
+@app.post("/wechat/window/normalize")
+def normalize_window() -> dict[str, object]:
+    return driver.normalize_window()
+
+
 @app.get("/send/driver/probe")
 def send_driver_probe() -> dict[str, object]:
     return driver.send_driver_probe()
+
+
+@app.post("/send/driver/calibrate")
+def calibrate_send_driver() -> dict[str, object]:
+    return driver.calibrate_send_driver()
 
 
 @app.get("/wechat/accounts/local")

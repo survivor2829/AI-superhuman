@@ -19,4 +19,6 @@ class LocalActionResult(BaseModel):
     verification_status: str = "failed"
     opened_conversation_title: str = ""
     matched_target: str = ""
+    search_term_used: str = ""
     failure_reason: str = ""
+    receipt: dict[str, Any] = Field(default_factory=dict)

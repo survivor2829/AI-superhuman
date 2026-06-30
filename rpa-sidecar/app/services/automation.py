@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.services.guardrails import LocalAction, LocalActionResult
-from app.services.weixin_driver import RealAutomationDriver, build_non_screen_send_driver_probe
+from app.services.weixin_driver import RealAutomationDriver, build_controlled_screen_send_driver_probe
 
 
 class DryRunAutomationDriver:
@@ -69,8 +69,20 @@ class WeixinAutomationDriver:
 
     def send_driver_probe(self) -> dict[str, object]:
         if self.dry_run:
-            return build_non_screen_send_driver_probe(mode="dry_run")
+            return build_controlled_screen_send_driver_probe(self.real_driver.controlled_screen_state, mode="dry_run")
         return self.real_driver.send_driver_probe()
+
+    def normalize_window(self) -> dict[str, object]:
+        if self.dry_run:
+            return {"success": True, "message": "dry_run_window_normalized", "dry_run": True}
+        return self.real_driver.normalize_window()
+
+    def calibrate_send_driver(self) -> dict[str, object]:
+        if self.dry_run:
+            self.real_driver.controlled_screen_state.calibrated = True
+            self.real_driver.controlled_screen_state.calibrated_at = datetime.now(UTC).isoformat()
+            return {"success": True, "calibrated": True, "message": "dry_run_calibrated", "send_driver": self.send_driver_probe()}
+        return self.real_driver.calibrate_send_driver()
 
     def local_accounts(self) -> list[dict[str, object]]:
         if self.dry_run:
@@ -95,17 +107,17 @@ class WeixinAutomationDriver:
             return self.dry_driver.execute(action)
         if action.action_type == "message.send":
             send_probe = self.send_driver_probe()
-            if not bool(send_probe.get("verified")):
+            if int(send_probe.get("max_batch_size") or 0) < 1:
                 return LocalActionResult(
                     success=False,
-                    message="非屏幕发送通道未验证，未执行发送",
+                    message=str(send_probe.get("message") or "请先校准微信窗口，未执行发送"),
                     dry_run=False,
                     evidence={
-                        "blocked_reason": "non_screen_send_driver_not_verified",
+                        "blocked_reason": str(send_probe.get("blocked_reason") or "window_calibration_required"),
                         "send_driver": send_probe,
                     },
                     verification_status="blocked",
-                    failure_reason=str(send_probe.get("message") or "非屏幕发送通道未验证，未执行发送"),
+                    failure_reason=str(send_probe.get("message") or "请先校准微信窗口，未执行发送"),
                 )
             return self.real_driver.send_message(
                 target_id=action.target_id,

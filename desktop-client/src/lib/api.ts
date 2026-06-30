@@ -31,6 +31,10 @@ export type SendDriverProbe = {
   message: string;
   capabilities: string[];
   blocked_reason?: string;
+  calibrated?: boolean;
+  calibrated_at?: string | null;
+  max_batch_size?: number;
+  anchors?: Record<string, { x: number; y: number }>;
   research_report_path?: string;
   research_artifacts?: Array<{
     kind: string;
@@ -206,7 +210,9 @@ export const api = {
   sidecarHealth: () => getJson<Health>(`${SIDECAR_URL}/health`),
   settings: () => getJson<Settings>(`${BACKEND_URL}/settings`),
   probe: () => getJson<WindowProbe>(`${BACKEND_URL}/wechat/window/probe`),
+  normalizeWindow: () => postJson<Record<string, unknown>>(`${BACKEND_URL}/wechat/window/normalize`, {}),
   sendDriverProbe: () => getJson<SendDriverProbe>(`${BACKEND_URL}/send/driver/probe`),
+  calibrateSendDriver: () => postJson<Record<string, unknown>>(`${BACKEND_URL}/send/driver/calibrate`, {}),
   localAccounts: () => getJson<{ accounts: LocalWechatAccount[] }>(`${BACKEND_URL}/wechat/accounts/local`),
   contacts: () => getJson<Contact[]>(`${BACKEND_URL}/wechat/contacts`),
   syncContacts: () => postJson<ContactSyncResponse>(`${BACKEND_URL}/wechat/contacts/sync`, {
@@ -225,7 +231,7 @@ export const api = {
   },
   createTouchPlan: () => postJson<{ id: string }>(`${BACKEND_URL}/touch/plans`, { name: "小批量触达", target_limit: 5 }),
   previewTouchPlan: (planId: string) => postJson<TouchPreview>(`${BACKEND_URL}/touch/plans/${planId}/preview`, { limit: 5, direct_send: true }),
-  runTouchPlan: (planId: string) => postJson<{ ran: number; results: unknown[] }>(`${BACKEND_URL}/touch/plans/${planId}/run`, { limit: 5, direct_send: true }),
+  runTouchPlan: (planId: string, limit = 5) => postJson<{ ran: number; allowed_limit?: number; requested_limit?: number; results: unknown[] }>(`${BACKEND_URL}/touch/plans/${planId}/run`, { limit, direct_send: true }),
   tasks: () => getJson<TaskRun[]>(`${BACKEND_URL}/tasks`),
   taskEvents: () => getJson<TaskEvent[]>(`${BACKEND_URL}/tasks/events`),
   audits: () => getJson<AuditLog[]>(`${BACKEND_URL}/audit/logs`),

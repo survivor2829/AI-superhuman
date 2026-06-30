@@ -205,22 +205,25 @@ def test_backend_exposes_send_driver_probe(monkeypatch):
     def fake_sidecar_get(path: str) -> dict:
         assert path == "/send/driver/probe"
         return {
-            "mode": "non_screen",
+            "mode": "controlled_screen",
             "verified": False,
-            "message": "非屏幕发送通道未验证，未执行发送",
-            "capabilities": ["contact_sync", "touch_preview", "audit_log"],
+            "calibrated": False,
+            "message": "请先校准微信窗口，未执行发送",
+            "capabilities": ["contact_sync", "touch_preview", "window_normalize", "controlled_screen_send", "audit_log"],
+            "blocked_reason": "window_calibration_required",
+            "max_batch_size": 0,
         }
 
     monkeypatch.setattr(main, "_sidecar_get", fake_sidecar_get)
 
     result = main.send_driver_probe()
 
-    assert result["mode"] == "non_screen"
+    assert result["mode"] == "controlled_screen"
     assert result["verified"] is False
-    assert result["message"] == "非屏幕发送通道未验证，未执行发送"
+    assert result["message"] == "请先校准微信窗口，未执行发送"
 
 
-def test_touch_run_blocks_before_creating_send_tasks_when_non_screen_driver_unverified(monkeypatch, tmp_path):
+def test_touch_run_blocks_before_creating_send_tasks_when_controlled_driver_uncalibrated(monkeypatch, tmp_path):
     import app.main as main
 
     store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
@@ -241,7 +244,7 @@ def test_touch_run_blocks_before_creating_send_tasks_when_non_screen_driver_unve
 
     def fake_sidecar_get(path: str) -> dict:
         assert path == "/send/driver/probe"
-        return {"mode": "non_screen", "verified": False, "message": "非屏幕发送通道未验证，未执行发送"}
+        return {"mode": "controlled_screen", "verified": False, "calibrated": False, "max_batch_size": 0, "message": "请先校准微信窗口，未执行发送"}
 
     def fake_sidecar_post(path: str, payload: dict) -> dict:
         sidecar_calls.append(path)
@@ -253,6 +256,6 @@ def test_touch_run_blocks_before_creating_send_tasks_when_non_screen_driver_unve
     response = main.run_touch_plan("plan_blocked", main.TouchRunRequest(limit=2, direct_send=True))
 
     assert response["ran"] == 0
-    assert response["message"] == "非屏幕发送通道未验证，未执行发送"
+    assert response["message"] == "请先校准微信窗口，未执行发送"
     assert sidecar_calls == []
     assert store.list_tasks() == []

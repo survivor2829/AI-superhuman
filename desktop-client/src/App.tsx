@@ -68,12 +68,17 @@ const REASON_LABELS: Record<string, string> = {
   blocked_target_not_found: "未找到客户",
   blocked_conversation_mismatch: "打开的会话不匹配",
   blocked_message_input_missing: "没有找到聊天输入框",
-  failed_message_not_verified: "发送后未核验到消息"
+  failed_message_not_verified: "发送后未核验到消息",
+  window_calibration_required: "请先校准微信窗口",
+  live_gate_required: "请先完成 1 个测试客户验证",
+  controlled_screen_calibration_required: "请先校准微信窗口"
 };
 
 const DRIVER_STATUS_LABELS: Record<string, string> = {
   research_only: "研究中",
   not_verified: "未验证",
+  not_calibrated: "待校准",
+  calibrated: "已校准",
   reference_only: "仅参考",
   verified: "已验证",
   blocked: "已阻断"
@@ -188,6 +193,16 @@ export function App() {
     setActiveView("contacts");
   });
 
+  const calibrateWechatWindow = async () => runAction("calibrate-driver", async () => {
+    setNotice("正在固定微信窗口并校准发送区域...");
+    await api.normalizeWindow();
+    const result = await api.calibrateSendDriver();
+    const calibrated = Boolean(result.calibrated || result.success);
+    setNotice(calibrated ? "微信窗口已校准，可先跑 1 个测试客户" : "校准失败，请确认微信主窗口已打开");
+    await refresh();
+    setActiveView("send");
+  });
+
   const excludeContact = async (contactId: string) => runAction(`exclude-${contactId}`, async () => {
     await api.excludeContact(contactId);
     setNotice("已从触达名单移除");
@@ -218,16 +233,17 @@ export function App() {
       setNotice("请先静默同步通讯录，或检查是否已全部移除");
       return;
     }
-    if (!canAutoSend) {
-      setNotice(sendDriverProbe?.message || "非屏幕发送通道未验证，未执行发送");
+    if (!canRunControlledSend) {
+      setNotice(sendDriverProbe?.message || "请先校准微信窗口，未执行发送");
       setActiveView("send");
       return;
     }
     const nextPlanId = await getOrCreatePlanId();
     const previewResult = await api.previewTouchPlan(nextPlanId);
     setPreview(previewResult);
-    const result = await api.runTouchPlan(nextPlanId);
-    setNotice(`本次处理 ${result.ran} 个客户，结果已记录`);
+    const runLimit = Math.max(1, Math.min(5, maxBatchSize || 1));
+    const result = await api.runTouchPlan(nextPlanId, runLimit);
+    setNotice(`本次处理 ${result.ran} 个客户，当前通道上限 ${result.allowed_limit ?? runLimit} 人`);
     await refresh();
     setActiveView("results");
   });
@@ -245,7 +261,10 @@ export function App() {
   const blockedCount = tasks.filter((task) => task.status === "blocked" || task.status === "failed").length;
   const promptReady = Boolean(promptInfo) || Boolean(settings?.deepseek_api_key_configured);
   const canAutoSend = sendDriverProbe?.verified === true;
-  const sendBlockedMessage = sendDriverProbe?.message || "非屏幕发送通道未验证，未执行发送";
+  const maxBatchSize = sendDriverProbe?.max_batch_size || 0;
+  const canRunControlledSend = maxBatchSize > 0;
+  const sendCalibrated = sendDriverProbe?.calibrated === true;
+  const sendBlockedMessage = sendDriverProbe?.message || "请先校准微信窗口，未执行发送";
   const sendDriverCandidates = sendDriverProbe?.candidates || [];
 
   const steps = CUSTOMER_STEPS.map((step) => {
@@ -283,7 +302,7 @@ export function App() {
         <header className="topbar">
           <div>
             <h1>小批量客户触达</h1>
-            <p>先同步客户、导入话术、生成预览；非屏幕发送通道验证后，才会开放自动发送。</p>
+            <p>先同步客户、导入话术、生成预览；校准微信窗口并完成 1 人验证后，才会开放小批量发送。</p>
           </div>
           <button className="icon-button" onClick={() => void refresh()} title="刷新状态">
             <RefreshCw size={18} />
@@ -315,7 +334,8 @@ export function App() {
           <input ref={promptFileInput} className="file-input" type="file" accept=".docx" onChange={(event) => void importPromptFile(event)} />
           <button className="primary-button" onClick={() => void syncContacts()} disabled={busyAction !== null}><UsersRound size={16} />静默同步通讯录</button>
           <button className="primary-button" onClick={() => void preparePreview()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成预览</button>
-          <button className="danger-button" onClick={() => void runSmallBatch()} disabled={busyAction !== null || touchableContacts.length === 0 || !canAutoSend}><Send size={16} />{canAutoSend ? "开始发送" : "暂不可自动发送"}</button>
+          <button className="primary-button" onClick={() => void calibrateWechatWindow()} disabled={busyAction !== null || !wechatReady}><Radar size={16} />校准微信窗口</button>
+          <button className="danger-button" onClick={() => void runSmallBatch()} disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend}><Send size={16} />{canAutoSend ? "开始小批量" : canRunControlledSend ? "开始 1 人验证" : "待校准"}</button>
           <button className="ghost-button"><PauseCircle size={16} />暂停</button>
           <span className="notice">{notice}</span>
         </section>
@@ -406,9 +426,10 @@ export function App() {
               </div>
             </div>
             <div className="panel blocked-callout">
-              <div className="panel-title"><h2>暂不可自动发送</h2><MiniStatus ok={canAutoSend} text={canAutoSend ? "已验证" : "未验证"} /></div>
-              <p className="plain-copy">{canAutoSend ? "非屏幕发送通道已验证，可以执行小批量发送。" : sendBlockedMessage}</p>
-              {!canAutoSend && <p className="muted">当前不会点击微信、不会输入消息、不会移动窗口。你可以先生成预览，等非屏幕发送通道验证后再恢复自动发送。</p>}
+              <div className="panel-title"><h2>受控窗口自动化</h2><MiniStatus ok={canRunControlledSend} text={canAutoSend ? "已验证" : sendCalibrated ? "已校准" : "待校准"} /></div>
+              <p className="plain-copy">{canAutoSend ? "已通过 1 个测试客户验证，可以执行 3 人小批量。" : sendBlockedMessage}</p>
+              {!sendCalibrated && <p className="muted">请先点击“校准微信窗口”。系统会把微信固定到左上角，并记录搜索区、输入区和截图证据。</p>}
+              {sendCalibrated && !canAutoSend && <p className="muted">当前只开放 1 个测试客户验证。验证成功后，再开放 3 人小批量。</p>}
               <div className="driver-progress">
                 <strong>通道研究进度</strong>
                 {sendDriverCandidates.length === 0 ? (
@@ -419,7 +440,7 @@ export function App() {
                       <span>{candidate.label}</span>
                       <p>{candidate.evidence || "尚未完成验证"}</p>
                     </div>
-                    <b>{candidate.can_send ? "可发送" : DRIVER_STATUS_LABELS[candidate.status] || "未验证"}</b>
+                    <b>{candidate.can_send ? "可验证" : DRIVER_STATUS_LABELS[candidate.status] || "未验证"}</b>
                   </div>
                 ))}
               </div>
@@ -440,9 +461,9 @@ export function App() {
               <div className="summary-box">
                 <span>本次客户</span><strong>{preview?.count || touchableContacts.length} 人</strong>
                 <span>测试前缀</span><strong>{settings?.rpa_send_prefix || "这是测试说明："}</strong>
-                <span>安全规则</span><strong>{canAutoSend ? "非屏幕通道已验证" : "未验证不发送"}</strong>
+                <span>安全规则</span><strong>{canAutoSend ? "已通过单人验证" : sendCalibrated ? "只发 1 人验证" : "未校准不发送"}</strong>
               </div>
-              <button className="danger-button wide-button" disabled={busyAction !== null || touchableContacts.length === 0 || !canAutoSend} onClick={() => void runSmallBatch()}><Send size={16} />{canAutoSend ? "确认开始" : "暂不可自动发送"}</button>
+              <button className="danger-button wide-button" disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend} onClick={() => void runSmallBatch()}><Send size={16} />{canAutoSend ? "确认开始小批量" : canRunControlledSend ? "开始 1 人验证" : "请先校准微信窗口"}</button>
             </div>
           </section>
         )}
@@ -481,7 +502,7 @@ export function App() {
               <div className="summary-box">
                 <span>触达间隔</span><strong>{settings ? `${settings.contact_touch_interval_days} 天` : "-"}</strong>
                 <span>消息前缀</span><strong>{settings?.rpa_send_prefix || "-"}</strong>
-                <span>发送策略</span><strong>{canAutoSend ? "非屏幕通道自动发" : "未验证不发送"}</strong>
+                <span>发送策略</span><strong>{canAutoSend ? "受控窗口小批量" : sendCalibrated ? "单人验证" : "未校准不发送"}</strong>
               </div>
             </div>
             <details className="panel diagnostics">
@@ -493,7 +514,7 @@ export function App() {
                 <span>窗口标题</span><strong>{probe?.window_title || "-"}</strong>
                 <span>截图记录</span><strong>{evidence.length}</strong>
                 <span>审计记录</span><strong>{audits.length}</strong>
-                <span>发送通道</span><strong>{sendDriverProbe?.verified ? "已验证" : "未验证"}</strong>
+                <span>发送通道</span><strong>{sendDriverProbe?.verified ? "已验证" : sendCalibrated ? "已校准" : "待校准"}</strong>
               </div>
             </details>
           </section>

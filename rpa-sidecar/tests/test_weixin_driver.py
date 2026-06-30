@@ -110,6 +110,56 @@ def test_real_driver_blocks_send_when_weixin_window_missing(tmp_path):
     assert result.evidence["before_probe"]
 
 
+def test_real_driver_blocks_send_before_controlled_screen_calibration(tmp_path):
+    probe = WindowProbeDriver(
+        process_name="Weixin",
+        window_title="微信",
+        process_provider=lambda: [
+            {
+                "name": "Weixin",
+                "pid": 34888,
+                "title": "微信",
+                "class_name": "Qt51514QWindowIcon",
+                "hwnd": 200,
+                "rect": (0, 0, 1280, 900),
+            }
+        ],
+    )
+    driver = RealAutomationDriver(probe_driver=probe, evidence_recorder=EvidenceRecorder(tmp_path, screenshot_provider=lambda path: False))
+
+    result = driver.send_message(target_id="A测试客户", content="这是测试说明：您好")
+
+    assert result.success is False
+    assert result.verification_status == "blocked"
+    assert result.failure_reason == "controlled_screen_calibration_required"
+
+
+def test_calibrate_send_driver_records_window_anchors(tmp_path, monkeypatch):
+    probe = WindowProbeDriver(
+        process_name="Weixin",
+        window_title="微信",
+        process_provider=lambda: [
+            {
+                "name": "Weixin",
+                "pid": 34888,
+                "title": "微信",
+                "class_name": "Qt51514QWindowIcon",
+                "hwnd": 200,
+                "rect": (0, 0, 1280, 900),
+            }
+        ],
+    )
+    driver = RealAutomationDriver(probe_driver=probe, evidence_recorder=EvidenceRecorder(tmp_path, screenshot_provider=lambda path: False))
+    monkeypatch.setattr(driver, "_normalize_window", lambda status: (True, "window_normalized"))
+
+    result = driver.calibrate_send_driver()
+
+    assert result["success"] is True
+    assert result["calibrated"] is True
+    assert driver.send_driver_probe()["max_batch_size"] == 1
+    assert result["anchors"]["search_box"]["x"] > 0
+
+
 def test_real_driver_blocks_send_when_wechat_window_cannot_be_activated(tmp_path):
     probe = WindowProbeDriver(
         process_name="Weixin",
@@ -132,6 +182,8 @@ def test_real_driver_blocks_send_when_wechat_window_cannot_be_activated(tmp_path
         evidence_recorder=EvidenceRecorder(tmp_path, screenshot_provider=lambda path: False),
         window_activator=lambda status: (False, "foreground_not_changed"),
     )
+    driver.controlled_screen_state.calibrated = True
+    driver.controlled_screen_state.anchors = {"search_box": {"x": 100, "y": 100}}
 
     result = driver.send_message(target_id="wxid_contact_001", content="这是测试说明：您好")
 

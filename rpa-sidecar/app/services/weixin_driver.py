@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Any
@@ -42,9 +42,22 @@ class SearchResolution:
     matched_target: str = ""
 
 
+@dataclass
+class ControlledScreenState:
+    calibrated: bool = False
+    calibrated_at: str | None = None
+    anchors: dict[str, Any] = field(default_factory=dict)
+    live_gate_verified: bool = False
+    last_verified_at: str | None = None
+    last_receipt: dict[str, Any] | None = None
+
+
 AGENT_ROOT = Path(__file__).resolve().parents[3]
 NON_SCREEN_SEND_MESSAGE = "非屏幕发送通道未验证，未执行发送"
 NON_SCREEN_SEND_BLOCKED_REASON = "non_screen_send_driver_not_verified"
+CONTROLLED_SCREEN_CALIBRATION_MESSAGE = "请先校准微信窗口，未执行发送"
+CONTROLLED_SCREEN_LIVE_GATE_MESSAGE = "微信窗口已校准，可先发送 1 个测试客户完成验证"
+CONTROLLED_SCREEN_VERIFIED_MESSAGE = "受控窗口自动化已通过单人验证，可执行 3 人小批量"
 
 
 def build_non_screen_send_driver_probe(*, mode: str = "non_screen") -> dict[str, object]:
@@ -91,6 +104,59 @@ def build_non_screen_send_driver_probe(*, mode: str = "non_screen") -> dict[str,
                 "requires_login_window": False,
                 "evidence": "可复用限额、白名单、审计、单人 live gate 思路；不复用屏幕点击发送实现。",
                 "next_step": "把安全门控保留在当前产品中，等待真正非屏幕通道验证。",
+            },
+        ],
+    }
+
+
+def build_controlled_screen_send_driver_probe(state: ControlledScreenState, *, mode: str = "controlled_screen") -> dict[str, object]:
+    max_batch_size = 3 if state.live_gate_verified else 1 if state.calibrated else 0
+    message = (
+        CONTROLLED_SCREEN_VERIFIED_MESSAGE
+        if state.live_gate_verified
+        else CONTROLLED_SCREEN_LIVE_GATE_MESSAGE
+        if state.calibrated
+        else CONTROLLED_SCREEN_CALIBRATION_MESSAGE
+    )
+    blocked_reason = "" if state.live_gate_verified else "live_gate_required" if state.calibrated else "window_calibration_required"
+    return {
+        "mode": mode,
+        "verified": state.live_gate_verified,
+        "calibrated": state.calibrated,
+        "message": message,
+        "capabilities": ["contact_sync", "touch_preview", "window_normalize", "controlled_screen_send", "audit_log"],
+        "blocked_reason": blocked_reason,
+        "max_batch_size": max_batch_size,
+        "calibrated_at": state.calibrated_at,
+        "anchors": state.anchors,
+        "research_report_path": str(AGENT_ROOT / "docs" / "non-screen-send-research.md"),
+        "research_artifacts": [
+            {
+                "kind": "contract_scan",
+                "path": str(AGENT_ROOT / "docs" / "research" / "dt-ai-helper-contract-scan.json"),
+                "available": (AGENT_ROOT / "docs" / "research" / "dt-ai-helper-contract-scan.json").exists(),
+            }
+        ],
+        "last_verified_at": state.last_verified_at,
+        "last_receipt": state.last_receipt,
+        "candidates": [
+            {
+                "id": "controlled_wechat_window_automation",
+                "label": "受控微信窗口自动化",
+                "status": "verified" if state.live_gate_verified else "calibrated" if state.calibrated else "not_calibrated",
+                "can_send": max_batch_size > 0,
+                "requires_login_window": True,
+                "evidence": "固定微信窗口到左上角，用 UIA/OCR/截图证据做目标校验；未校验目标时不发送。",
+                "next_step": "先完成 1 个测试客户 live gate；成功后开放 3 人小批量。",
+            },
+            {
+                "id": "dt_ai_helper_execution_pattern",
+                "label": "dt-ai-helper 实际执行模式",
+                "status": "reference_only",
+                "can_send": False,
+                "requires_login_window": True,
+                "evidence": "逆向证据显示其执行层依赖 UIA/OCR/截图/点击，而不是纯非屏幕发送接口。",
+                "next_step": "只复刻窗口归一化、状态机、失败拦截和证据链，不复用对方二进制或线上服务。",
             },
         ],
     }
@@ -382,12 +448,15 @@ class RealAutomationDriver:
         local_contact_extractor: WechatLocalContactExtractor | None = None,
         human_pause_seconds: tuple[float, float] = (1.2, 2.8),
         window_activator: Callable[[WindowProbeStatus], tuple[bool, str]] | None = None,
+        target_window_size: tuple[int, int] = (1280, 900),
     ) -> None:
         self.probe_driver = probe_driver
         self.evidence_recorder = evidence_recorder
         self.local_contact_extractor = local_contact_extractor or WechatLocalContactExtractor()
         self.human_pause_seconds = human_pause_seconds
         self.window_activator = window_activator or self._default_window_activator
+        self.target_window_size = target_window_size
+        self.controlled_screen_state = ControlledScreenState()
         self.stopped = False
 
     def status(self) -> dict[str, object]:
@@ -414,7 +483,62 @@ class RealAutomationDriver:
         return self.local_contact_extractor.sync_contacts(account_id=account_id, auto_decrypt=auto_decrypt)
 
     def send_driver_probe(self) -> dict[str, object]:
-        return build_non_screen_send_driver_probe()
+        return build_controlled_screen_send_driver_probe(self.controlled_screen_state)
+
+    def normalize_window(self) -> dict[str, object]:
+        probe = self.probe_driver.probe()
+        if not probe.detected or not probe.hwnd:
+            evidence = self.evidence_recorder.capture("window_normalize_failed")
+            return {
+                "success": False,
+                "message": probe.reason or "wechat_window_not_found",
+                "detected": probe.detected,
+                "hwnd": probe.hwnd,
+                "evidence": {"window_normalize_failed": evidence.path},
+            }
+        success, reason = self._normalize_window(probe)
+        evidence = self.evidence_recorder.capture("window_normalized" if success else "window_normalize_failed")
+        refreshed = self.probe_driver.probe()
+        return {
+            "success": success,
+            "message": reason,
+            "detected": refreshed.detected,
+            "hwnd": refreshed.hwnd,
+            "pid": refreshed.pid,
+            "rect": refreshed.rect,
+            "class_name": refreshed.class_name,
+            "foreground_match": refreshed.foreground_match,
+            "evidence": {"window_normalized" if success else "window_normalize_failed": evidence.path},
+        }
+
+    def calibrate_send_driver(self) -> dict[str, object]:
+        normalized = self.normalize_window()
+        if not bool(normalized.get("success")):
+            self.controlled_screen_state.calibrated = False
+            return {
+                "success": False,
+                "calibrated": False,
+                "message": str(normalized.get("message") or "window_normalize_failed"),
+                "normalize": normalized,
+            }
+        rect = self._rect_tuple(normalized.get("rect"))
+        if rect is None:
+            self.controlled_screen_state.calibrated = False
+            return {"success": False, "calibrated": False, "message": "window_rect_missing", "normalize": normalized}
+        anchors = self._default_relative_anchors(rect)
+        evidence = self.evidence_recorder.capture("send_driver_calibrated")
+        self.controlled_screen_state.calibrated = True
+        self.controlled_screen_state.calibrated_at = datetime.now(UTC).isoformat()
+        self.controlled_screen_state.anchors = anchors
+        return {
+            "success": True,
+            "calibrated": True,
+            "message": CONTROLLED_SCREEN_LIVE_GATE_MESSAGE,
+            "rect": rect,
+            "anchors": anchors,
+            "evidence": {"send_driver_calibrated": evidence.path},
+            "send_driver": self.send_driver_probe(),
+        }
 
     def send_message(self, *, target_id: str, content: str, search_terms: list[str] | None = None) -> LocalActionResult:
         evidence: dict[str, Any] = {}
@@ -429,6 +553,16 @@ class RealAutomationDriver:
                 evidence={**evidence, "reason": probe.reason},
                 verification_status="failed",
                 failure_reason=probe.reason or "wechat_window_not_found",
+            )
+        if not self.controlled_screen_state.calibrated:
+            failure = self.evidence_recorder.capture("calibration_required", target_id=target_id)
+            return LocalActionResult(
+                success=False,
+                message="controlled_screen_calibration_required",
+                dry_run=False,
+                evidence={"calibration_required": failure.path},
+                verification_status="blocked",
+                failure_reason="controlled_screen_calibration_required",
             )
         activated, activation_reason = self.window_activator(probe)
         if not activated:
@@ -480,6 +614,8 @@ class RealAutomationDriver:
             verification_status="verified",
             opened_conversation_title=str(verification.get("opened_conversation_title") or ""),
             matched_target=str(verification.get("matched_target") or target_id),
+            search_term_used=str(verification.get("search_term_used") or ""),
+            receipt=self._mark_live_gate_verified(target_id=target_id, verification=verification),
         )
 
     def like_moment(self, *, target_id: str, comment: str = "") -> LocalActionResult:
@@ -506,9 +642,10 @@ class RealAutomationDriver:
         time.sleep(0.3)
         send_keys("{ESC}")
         search_box = self._find_chat_search_edit(window)
-        if search_box is None:
+        if search_box is None and not self._click_calibrated_anchor("search_box"):
             raise BlockedSend("blocked_search_input_missing")
-        search_box.click_input()
+        if search_box is not None:
+            search_box.click_input()
         time.sleep(random.uniform(*self.human_pause_seconds))
         send_keys("^a{BACKSPACE}")
         send_keys(first_search_term, with_spaces=True)
@@ -528,9 +665,10 @@ class RealAutomationDriver:
             raise BlockedSend("blocked_conversation_mismatch", opened_title=opened_title, matched_target=decision.matched_target)
         evidence["conversation_verified"] = self.evidence_recorder.capture("conversation_verified", target_id=target_id).path
         input_box = self._find_message_input(window)
-        if input_box is None:
+        if input_box is None and not self._click_calibrated_anchor("message_input"):
             raise BlockedSend("blocked_message_input_missing", opened_title=opened_title, matched_target=decision.matched_target)
-        input_box.click_input()
+        if input_box is not None:
+            input_box.click_input()
         time.sleep(random.uniform(*self.human_pause_seconds))
         send_keys(content, with_spaces=True)
         time.sleep(random.uniform(*self.human_pause_seconds))
@@ -540,7 +678,7 @@ class RealAutomationDriver:
         evidence["after_send"] = self.evidence_recorder.capture("after_send", target_id=target_id).path
         if not self._message_visible(window, content):
             raise BlockedSend("failed_message_not_verified", opened_title=opened_title, matched_target=decision.matched_target)
-        return {"opened_conversation_title": opened_title, "matched_target": decision.matched_target}
+        return {"opened_conversation_title": opened_title, "matched_target": decision.matched_target, "search_term_used": first_search_term}
 
     def _read_visible_text_contacts(self, *, limit: int) -> list[dict[str, str]]:
         try:
@@ -615,6 +753,88 @@ class RealAutomationDriver:
                 pass
             time.sleep(0.1)
         return False, "foreground_not_changed"
+
+    def _normalize_window(self, status: WindowProbeStatus) -> tuple[bool, str]:
+        if not status.hwnd:
+            return False, "wechat_hwnd_missing"
+        try:
+            import win32con
+            import win32gui
+        except Exception as exc:
+            return False, f"win32_unavailable:{type(exc).__name__}"
+
+        width, height = self.target_window_size
+        try:
+            win32gui.ShowWindow(status.hwnd, win32con.SW_RESTORE)
+            time.sleep(0.2)
+            win32gui.MoveWindow(status.hwnd, 0, 0, width, height, True)
+            time.sleep(0.2)
+            win32gui.SetForegroundWindow(status.hwnd)
+            time.sleep(0.2)
+            return True, "window_normalized"
+        except Exception as exc:
+            return False, f"window_normalize_failed:{type(exc).__name__}"
+
+    @staticmethod
+    def _rect_tuple(value: object) -> tuple[int, int, int, int] | None:
+        if isinstance(value, (list, tuple)) and len(value) == 4:
+            try:
+                return (int(value[0]), int(value[1]), int(value[2]), int(value[3]))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _default_relative_anchors(rect: tuple[int, int, int, int]) -> dict[str, dict[str, int]]:
+        left, top, right, bottom = rect
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+
+        def point(x_ratio: float, y_ratio: float) -> dict[str, int]:
+            return {
+                "x": int(left + width * x_ratio),
+                "y": int(top + height * y_ratio),
+            }
+
+        return {
+            "search_box": point(0.18, 0.09),
+            "first_result_area": point(0.18, 0.17),
+            "conversation_title": point(0.46, 0.09),
+            "message_input": point(0.62, 0.92),
+            "send_button_area": point(0.93, 0.94),
+        }
+
+    def _click_calibrated_anchor(self, name: str) -> bool:
+        anchor = self.controlled_screen_state.anchors.get(name)
+        if not isinstance(anchor, dict):
+            return False
+        try:
+            x = int(anchor["x"])
+            y = int(anchor["y"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        try:
+            from pywinauto import mouse
+
+            mouse.click(button="left", coords=(x, y))
+            return True
+        except Exception:
+            return False
+
+    def _mark_live_gate_verified(self, *, target_id: str, verification: dict[str, str]) -> dict[str, Any]:
+        receipt = {
+            "receipt_id": uuid4().hex,
+            "channel_id": "controlled_screen",
+            "target_id": target_id,
+            "matched_target": str(verification.get("matched_target") or ""),
+            "opened_conversation_title": str(verification.get("opened_conversation_title") or ""),
+            "search_term_used": str(verification.get("search_term_used") or ""),
+            "verified_at": datetime.now(UTC).isoformat(),
+        }
+        self.controlled_screen_state.live_gate_verified = True
+        self.controlled_screen_state.last_verified_at = str(receipt["verified_at"])
+        self.controlled_screen_state.last_receipt = receipt
+        return receipt
 
     @staticmethod
     def _visible_texts(window) -> list[str]:

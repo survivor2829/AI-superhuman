@@ -145,9 +145,19 @@ def window_probe() -> dict[str, object]:
     return _sidecar_get("/wechat/window/probe")
 
 
+@app.post("/wechat/window/normalize")
+def normalize_wechat_window() -> dict[str, object]:
+    return _sidecar_post("/wechat/window/normalize", {})
+
+
 @app.get("/send/driver/probe")
 def send_driver_probe() -> dict[str, object]:
     return _sidecar_get("/send/driver/probe")
+
+
+@app.post("/send/driver/calibrate")
+def calibrate_send_driver() -> dict[str, object]:
+    return _sidecar_post("/send/driver/calibrate", {})
 
 
 @app.get("/wechat/accounts/local")
@@ -285,18 +295,20 @@ def create_touch_plan(request: TouchPlanCreateRequest) -> AutomationPlan:
 @app.post("/touch/plans/{plan_id}/run")
 def run_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
     send_probe = send_driver_probe()
-    if not bool(send_probe.get("verified")):
+    max_batch_size = int(send_probe.get("max_batch_size") or (3 if bool(send_probe.get("verified")) else 0))
+    if max_batch_size < 1:
         return {
             "plan_id": plan_id,
             "ran": 0,
             "results": [],
-            "message": str(send_probe.get("message") or "非屏幕发送通道未验证，未执行发送"),
+            "message": str(send_probe.get("message") or "请先校准微信窗口，未执行发送"),
             "send_driver": send_probe,
         }
+    effective_limit = min(request.limit, max_batch_size)
 
     planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
     contacts = store.list_contacts(
-        limit=request.limit,
+        limit=effective_limit,
         eligible_for_touch=True,
         confirmed_for_touch=True,
         source="wechat_local_contact_db",
@@ -311,7 +323,7 @@ def run_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
     system_prompt = profile["system_prompt"] if profile else "你是专业销售顾问，回复要简洁自然。"
     knowledge = "\n".join(f"问题：{item['question']}\n答案：{item['answer']}" for item in (profile or {}).get("knowledge_base", []))
 
-    for contact in contacts[: request.limit]:
+    for contact in contacts[:effective_limit]:
         decision = planner.evaluate(plan_id=plan_id, contact_id=contact.id)
         if not decision.allowed:
             results.append({"contact_id": contact.id, "wxid": contact.wxid, "status": "skipped", "reason": decision.reason, "next_touch_at": decision.next_touch_at})
@@ -344,7 +356,7 @@ def run_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
         results.append({"contact_id": contact.id, "wxid": contact.wxid, "status": status, "reply": draft.reply_text, "result": message_result})
         if _should_stop_touch_batch(sidecar_result):
             break
-    return {"plan_id": plan_id, "ran": len(results), "results": results}
+    return {"plan_id": plan_id, "ran": len(results), "allowed_limit": max_batch_size, "requested_limit": request.limit, "results": results}
 
 
 @app.post("/touch/plans/{plan_id}/preview")

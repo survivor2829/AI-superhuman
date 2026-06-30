@@ -6,21 +6,35 @@ from app.services.weixin_driver import EvidenceRecorder, RealAutomationDriver, W
 class FakeRealDriver:
     def __init__(self) -> None:
         self.send_attempts = 0
+        self.controlled_screen_state = type(
+            "State",
+            (),
+            {
+                "calibrated": False,
+                "calibrated_at": None,
+                "anchors": {},
+                "live_gate_verified": False,
+                "last_verified_at": None,
+                "last_receipt": None,
+            },
+        )()
 
     def send_driver_probe(self) -> dict[str, object]:
         return {
-            "mode": "non_screen",
+            "mode": "controlled_screen",
             "verified": False,
-            "message": "非屏幕发送通道未验证，未执行发送",
-            "capabilities": ["contact_sync", "touch_preview", "audit_log"],
-            "blocked_reason": "non_screen_send_driver_not_verified",
+            "calibrated": False,
+            "message": "请先校准微信窗口，未执行发送",
+            "capabilities": ["contact_sync", "touch_preview", "window_normalize", "controlled_screen_send", "audit_log"],
+            "blocked_reason": "window_calibration_required",
+            "max_batch_size": 0,
             "candidates": [
                 {
-                    "id": "dt_ai_helper_local_service",
-                    "label": "dt-ai-helper 本地服务合同",
-                    "status": "research_only",
+                    "id": "controlled_wechat_window_automation",
+                    "label": "受控微信窗口自动化",
+                    "status": "not_calibrated",
                     "can_send": False,
-                    "evidence": "静态分析未验证可用非屏幕发送回执",
+                    "evidence": "待校准",
                 }
             ],
             "last_verified_at": None,
@@ -32,7 +46,7 @@ class FakeRealDriver:
         raise AssertionError("real UI send must not be called before non-screen driver verification")
 
 
-def test_message_send_blocks_before_non_screen_driver_is_verified():
+def test_message_send_blocks_before_controlled_screen_driver_is_calibrated():
     real_driver = FakeRealDriver()
     driver = WeixinAutomationDriver(real_driver, dry_run=False)
 
@@ -46,23 +60,24 @@ def test_message_send_blocks_before_non_screen_driver_is_verified():
 
     assert result.success is False
     assert result.verification_status == "blocked"
-    assert result.message == "非屏幕发送通道未验证，未执行发送"
-    assert result.failure_reason == "非屏幕发送通道未验证，未执行发送"
+    assert result.message == "请先校准微信窗口，未执行发送"
+    assert result.failure_reason == "请先校准微信窗口，未执行发送"
     assert real_driver.send_attempts == 0
 
 
-def test_send_driver_probe_exposes_current_non_screen_status():
+def test_send_driver_probe_exposes_current_controlled_screen_status():
     driver = WeixinAutomationDriver(FakeRealDriver(), dry_run=False)
 
     result = driver.send_driver_probe()
 
-    assert result["mode"] == "non_screen"
+    assert result["mode"] == "controlled_screen"
     assert result["verified"] is False
-    assert result["message"] == "非屏幕发送通道未验证，未执行发送"
-    assert result["blocked_reason"] == "non_screen_send_driver_not_verified"
+    assert result["message"] == "请先校准微信窗口，未执行发送"
+    assert result["blocked_reason"] == "window_calibration_required"
+    assert result["max_batch_size"] == 0
     assert result["last_verified_at"] is None
     assert result["last_receipt"] is None
-    assert result["candidates"][0]["id"] == "dt_ai_helper_local_service"
+    assert result["candidates"][0]["id"] == "controlled_wechat_window_automation"
     assert result["candidates"][0]["can_send"] is False
 
 
@@ -74,16 +89,16 @@ def test_real_driver_probe_lists_research_candidates(tmp_path):
 
     result = driver.send_driver_probe()
 
-    assert result["mode"] == "non_screen"
+    assert result["mode"] == "controlled_screen"
     assert result["verified"] is False
-    assert result["blocked_reason"] == "non_screen_send_driver_not_verified"
+    assert result["blocked_reason"] == "window_calibration_required"
+    assert result["max_batch_size"] == 0
     assert result["last_verified_at"] is None
     assert result["last_receipt"] is None
     candidate_ids = {candidate["id"] for candidate in result["candidates"]}
     assert candidate_ids == {
-        "dt_ai_helper_local_service",
-        "wechat_local_data_ipc",
-        "rpaagent_safety_boundary",
+        "controlled_wechat_window_automation",
+        "dt_ai_helper_execution_pattern",
     }
     assert all(candidate["can_send"] is False for candidate in result["candidates"])
     assert str(result["research_report_path"]).endswith("docs\\non-screen-send-research.md")
