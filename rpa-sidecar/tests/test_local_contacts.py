@@ -1,6 +1,8 @@
+import subprocess
 import sqlite3
 from pathlib import Path
 
+from app.services import local_contacts as local_contacts_module
 from app.services.local_contacts import WechatLocalContactExtractor
 
 
@@ -113,3 +115,36 @@ def test_decrypt_summary_includes_retry_attempt():
 
     assert "attempt 2/4" in summary
     assert "结果: 0/17 salts 找到密钥" in summary
+
+
+def test_decrypt_retry_does_not_crash_between_attempts(tmp_path, monkeypatch):
+    tool_dir = tmp_path / "wechat-decrypt"
+    tool_dir.mkdir()
+    db_storage = tmp_path / "xwechat_files" / "wxid_owner_abcd" / "db_storage"
+    db_storage.mkdir(parents=True)
+    account = {
+        "account_id": "wxid_owner",
+        "account_dir": "wxid_owner_abcd",
+        "db_storage_path": str(db_storage),
+    }
+    calls = {"count": 0}
+
+    def fake_run(*_args, **_kwargs):
+        calls["count"] += 1
+        return subprocess.CompletedProcess(
+            args=["python", "main.py", "decrypt"],
+            returncode=1,
+            stdout="结果: 0/1 salts 找到密钥\n",
+            stderr="未能从任何微信进程中提取到密钥\n",
+        )
+
+    monkeypatch.setenv("WECHAT_DECRYPT_ATTEMPTS", "2")
+    monkeypatch.setenv("WECHAT_DECRYPT_RETRY_DELAY_SECONDS", "0.01")
+    monkeypatch.setattr(local_contacts_module.subprocess, "run", fake_run)
+    extractor = WechatLocalContactExtractor(root=tmp_path / "xwechat_files", decrypt_tool_dir=tool_dir)
+
+    result = extractor._run_decrypt(account)
+
+    assert calls["count"] == 2
+    assert result["reason"] == "decrypt_command_failed"
+    assert "attempt 2/2" in result["summary"]
