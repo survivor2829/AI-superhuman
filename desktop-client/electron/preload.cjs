@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("agentDesktop", {
   startServices: () => ipcRenderer.invoke("app:start-services"),
+  getServiceStatus: () => ipcRenderer.invoke("app:get-service-status"),
+  restartServicesAsAdmin: () => ipcRenderer.invoke("app:restart-services-admin"),
   enterRunMode: () => ipcRenderer.invoke("app:enter-run-mode"),
   exitRunMode: () => ipcRenderer.invoke("app:exit-run-mode"),
   pauseTask: () => ipcRenderer.invoke("task:pause"),

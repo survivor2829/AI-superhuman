@@ -13,9 +13,11 @@ const requiredSnippets = [
   "开始触达",
   "查看结果",
   "高级诊断",
+  "软件服务",
+  "修复启动",
 ];
 
-const forbiddenCustomerCopy = ["Backend", "RPA Sidecar", "preflight", "payload hash", "已加入发送名单", ">加入<"];
+const forbiddenCustomerCopy = ["Backend", "RPA Sidecar", "preflight", "payload hash", "已加入发送名单", ">加入<", "复制命令"];
 const customerActionBand = appSource.match(/<section className="action-band">([\s\S]*?)<\/section>/)?.[1] || "";
 const customerSendFlow = appSource.match(/const startCustomerSendFlow = async \(\) => runAction\("customer-start-send", async \(\) => \{([\s\S]*?)\n  \}\);/)?.[1] || "";
 const requiredPrimaryButtons = ["静默同步通讯录", "选择话术文件", "开始发送"];

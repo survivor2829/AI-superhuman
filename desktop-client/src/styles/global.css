@@ -229,6 +229,58 @@ h2 {
   margin-bottom: 16px;
 }
 
+.service-banner {
+  background: #ffffff;
+  border: 1px solid #e1e7f0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.service-banner-copy {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.service-banner-copy svg {
+  flex: 0 0 auto;
+}
+
+.service-banner-copy strong,
+.service-banner-copy span {
+  display: block;
+}
+
+.service-banner-copy span {
+  color: #68778d;
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+.service-banner-ready {
+  border-color: #b7ebc6;
+  background: #f7fef9;
+}
+
+.service-banner-ready svg {
+  color: #116329;
+}
+
+.service-banner-warning {
+  border-color: #f4d79b;
+  background: #fffaf0;
+}
+
+.service-banner-warning svg {
+  color: #9a6700;
+}
+
 .notice {
   color: #47607a;
   font-size: 13px;

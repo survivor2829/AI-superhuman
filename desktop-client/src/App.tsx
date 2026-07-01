@@ -19,7 +19,7 @@ import {
   UsersRound
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AuditLog, AutoReplyItem, Contact, CurrentTaskStatus, EvidenceFile, Health, MomentsFeedItem, PromptImportResponse, SendDriverProbe, Settings, SyncWizardStatus, TaskEvent, TaskRun, TouchPreview, TouchQueueResponse, WindowProbe } from "./lib/api";
+import { api, AuditLog, AutoReplyItem, Contact, CurrentTaskStatus, EvidenceFile, Health, MomentsFeedItem, PromptImportResponse, SendDriverProbe, ServiceStatus, Settings, SyncWizardStatus, TaskEvent, TaskRun, TouchPreview, TouchQueueResponse, WindowProbe } from "./lib/api";
 
 type ViewId = "home" | "prompt" | "contacts" | "send" | "reply" | "moments" | "results" | "settings";
 type ServiceState = "online" | "offline" | "checking";
@@ -136,6 +136,8 @@ export function App() {
   const [evidence, setEvidence] = useState<EvidenceFile[]>([]);
   const [appError, setAppError] = useState<string | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
+  const [desktopServiceStatus, setDesktopServiceStatus] = useState<ServiceStatus | null>(null);
+  const [desktopServiceError, setDesktopServiceError] = useState<string | null>(null);
   const [notice, setNotice] = useState("准备就绪");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [promptInfo, setPromptInfo] = useState<PromptImportResponse | null>(null);
@@ -150,7 +152,11 @@ export function App() {
   const refresh = async () => {
     setAppError(null);
     setServiceError(null);
+    setDesktopServiceError(null);
     await Promise.all([
+      window.agentDesktop?.getServiceStatus()
+        .then(setDesktopServiceStatus)
+        .catch((error) => setDesktopServiceError(error instanceof Error ? error.message : "软件服务状态检查失败")) || Promise.resolve(),
       api.backendHealth().then(setAppHealth).catch((error) => setAppError(error.message)),
       api.sidecarHealth().then(setServiceHealth).catch((error) => setServiceError(error.message)),
       api.settings().then(setSettings).catch(() => setSettings(null)),
@@ -178,6 +184,27 @@ export function App() {
       setBusyAction(null);
     }
   };
+
+  const repairServices = async () => runAction("repair-services", async () => {
+    if (!window.agentDesktop) {
+      setNotice("请从桌面软件打开，不要用浏览器页面修复服务。");
+      return;
+    }
+    setNotice("正在请求系统权限，请在弹窗里点“是”...");
+    const result = await window.agentDesktop.restartServicesAsAdmin();
+    setNotice(result.message || "已请求系统权限，正在恢复服务...");
+    for (let index = 0; index < 35; index += 1) {
+      await delay(1500);
+      const status = await window.agentDesktop.getServiceStatus();
+      setDesktopServiceStatus(status);
+      if (status.ready) {
+        setNotice("软件服务已恢复，可以继续操作。");
+        await refresh();
+        return;
+      }
+    }
+    setNotice("还没有检测到服务恢复。如果权限弹窗被挡住，请先确认弹窗。");
+  });
 
   const importPrompt = async () => runAction("import-prompt", async () => {
     setNotice("正在导入默认话术...");
@@ -530,6 +557,13 @@ export function App() {
   }, []);
 
   const serviceReady = stateFromHealth(appHealth, appError) === "online" && stateFromHealth(serviceHealth, serviceError) === "online";
+  const desktopReady = window.agentDesktop ? desktopServiceStatus?.ready === true : serviceReady;
+  const serviceStatusTitle = desktopReady ? "软件服务已就绪" : desktopServiceStatus ? "软件服务需要修复" : "正在检查软件服务";
+  const serviceStatusMessage = desktopReady
+    ? "后台已经准备好，可以同步通讯录、导入话术和开始发送。"
+    : desktopServiceError
+      ? "软件暂时没有拿到服务状态，请点击修复启动。"
+      : "如果同步或发送没有反应，点击右侧修复启动，按系统弹窗确认即可。";
   const wechatReady = Boolean(probe?.detected);
   const localContacts = useMemo(() => contacts.filter((contact) => contact.source === "wechat_local_contact_db"), [contacts]);
   const touchableContacts = useMemo(() => localContacts.filter((contact) => contact.eligible_for_touch && contact.confirmed_for_touch), [localContacts]);
@@ -550,7 +584,7 @@ export function App() {
   const touchIntervalModeLabel = settings?.touch_interval_mode === "test_ignore" ? "测试模式：允许重复验收" : "正式模式：15 天不重复触达";
 
   const steps = CUSTOMER_STEPS.map((step) => {
-    if (step === "连接微信") return { label: step, done: serviceReady && wechatReady };
+    if (step === "连接微信") return { label: step, done: desktopReady && wechatReady };
     if (step === "导入话术") return { label: step, done: promptReady };
     if (step === "确认客户") return { label: step, done: touchableContacts.length > 0 };
     if (step === "开始触达") return { label: step, done: canAutoSend && tasks.length > 0 };
@@ -590,6 +624,19 @@ export function App() {
             <RefreshCw size={18} />
           </button>
         </header>
+
+        <section className={`service-banner ${desktopReady ? "service-banner-ready" : "service-banner-warning"}`}>
+          <div className="service-banner-copy">
+            <ShieldCheck size={20} />
+            <div>
+              <strong>{serviceStatusTitle}</strong>
+              <span>{serviceStatusMessage}</span>
+            </div>
+          </div>
+          <button className="ghost-button" onClick={() => void repairServices()} disabled={busyAction !== null || !window.agentDesktop}>
+            <RefreshCw size={16} />修复启动
+          </button>
+        </section>
 
         <section className="customer-status-grid">
           <article className="metric">

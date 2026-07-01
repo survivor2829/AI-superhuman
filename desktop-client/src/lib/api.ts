@@ -161,8 +161,19 @@ export type CurrentTaskStatus = {
   last_event?: TaskEvent | null;
 };
 
+export type ServiceStatus = {
+  ok: boolean;
+  ready: boolean;
+  backend: boolean;
+  sidecar: boolean;
+  renderer: boolean;
+  message: string;
+};
+
 export type DesktopBridge = {
   startServices: () => Promise<{ ok: boolean }>;
+  getServiceStatus: () => Promise<ServiceStatus>;
+  restartServicesAsAdmin: () => Promise<{ ok: boolean; success?: boolean; message: string }>;
   enterRunMode: () => Promise<Record<string, unknown>>;
   exitRunMode: () => Promise<{ ok: boolean }>;
   pauseTask: () => Promise<Record<string, unknown>>;

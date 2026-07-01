@@ -1,3 +1,7 @@
+param(
+    [switch]$ServicesOnly
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -197,10 +201,14 @@ function Start-DesktopApp {
 
 Import-DotEnv
 
-Stop-DesktopApp
+if (-not $ServicesOnly) {
+    Stop-DesktopApp
+}
 Stop-PortProcess -Port 8710 -Name "Backend"
 Stop-PortProcess -Port 8720 -Name "RPA sidecar"
-Stop-PortProcess -Port 5173 -Name "Desktop renderer"
+if (-not $ServicesOnly) {
+    Stop-PortProcess -Port 5173 -Name "Desktop renderer"
+}
 
 Start-UvicornApp `
     -Name "Backend" `
@@ -216,18 +224,24 @@ Start-UvicornApp `
     -OutLog (Join-Path $sidecar "sidecar.log") `
     -ErrLog (Join-Path $sidecar "sidecar.err.log")
 
-Start-DesktopPreview
-Start-DesktopApp
+if (-not $ServicesOnly) {
+    Start-DesktopPreview
+    Start-DesktopApp
+}
 
 $backendOk = Wait-Http -Url "http://127.0.0.1:8710/health"
 $sidecarOk = Wait-Http -Url "http://127.0.0.1:8720/health"
-$desktopOk = Wait-Http -Url "http://127.0.0.1:5173"
+$desktopOk = if ($ServicesOnly) { $true } else { Wait-Http -Url "http://127.0.0.1:5173" }
 
 Write-Host ""
 Write-Host "Agent MVP status:"
 Write-Host "Backend       http://127.0.0.1:8710/docs      $backendOk"
 Write-Host "RPA sidecar   http://127.0.0.1:8720/docs      $sidecarOk"
-Write-Host "Desktop       http://127.0.0.1:5173           $desktopOk"
-Write-Host "Desktop app   Electron window                 started"
+if (-not $ServicesOnly) {
+    Write-Host "Desktop       http://127.0.0.1:5173           $desktopOk"
+    Write-Host "Desktop app   Electron window                 started"
+} else {
+    Write-Host "Desktop       current app window              unchanged"
+}
 Write-Host ""
 Write-Host "Logs are written under backend, rpa-sidecar, and desktop-client."

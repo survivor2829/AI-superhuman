@@ -9,6 +9,7 @@ const desktopDir = path.resolve(__dirname, "..");
 const backendDir = path.join(rootDir, "backend");
 const sidecarDir = path.join(rootDir, "rpa-sidecar");
 const preloadPath = path.join(__dirname, "preload.cjs");
+const startAgentScript = path.join(rootDir, "Start-Agent.ps1");
 
 const BACKEND_URL = "http://127.0.0.1:8710";
 const SIDECAR_URL = "http://127.0.0.1:8720";
@@ -128,6 +129,76 @@ async function waitForUrl(url, seconds = 25) {
     }
   }
   return false;
+}
+
+async function checkUrl(url) {
+  try {
+    await httpRequest("GET", url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getServiceStatus() {
+  const [backend, sidecar, renderer] = await Promise.all([
+    checkUrl(`${BACKEND_URL}/health`),
+    checkUrl(`${SIDECAR_URL}/health`),
+    process.env.NODE_ENV === "production" ? Promise.resolve(true) : checkUrl(RENDERER_URL)
+  ]);
+  const ready = backend && sidecar && renderer;
+  return {
+    ok: ready,
+    ready,
+    backend,
+    sidecar,
+    renderer,
+    message: ready ? "软件服务已就绪" : "软件服务未完全启动"
+  };
+}
+
+function psSingleQuoted(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function restartServicesAsAdmin() {
+  if (!fs.existsSync(startAgentScript)) {
+    return {
+      ok: false,
+      success: false,
+      message: "没有找到本地启动脚本，请检查软件目录是否完整"
+    };
+  }
+  const elevatedArgs = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-WindowStyle",
+    "Hidden",
+    "-File",
+    startAgentScript,
+    "-ServicesOnly"
+  ];
+  const argumentList = `@(${elevatedArgs.map(psSingleQuoted).join(",")})`;
+  const command = `Start-Process -FilePath ${psSingleQuoted("powershell.exe")} -Verb RunAs -WindowStyle Hidden -ArgumentList ${argumentList}`;
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+    {
+      cwd: rootDir,
+      windowsHide: true,
+      detached: true,
+      stdio: "ignore",
+      shell: false
+    }
+  );
+  child.unref();
+  appendMainLog("admin-restart", "requested services-only restart");
+  return {
+    ok: true,
+    success: true,
+    message: "已弹出权限确认，请点击“是”，软件会自动恢复服务"
+  };
 }
 
 function spawnService(name, command, args, cwd, outLog, errLog) {
@@ -270,6 +341,8 @@ safeHandle("app:start-services", async () => {
   await ensureServices();
   return { ok: true };
 }, "本地服务启动失败");
+safeHandle("app:get-service-status", () => getServiceStatus(), "软件服务状态检查失败");
+safeHandle("app:restart-services-admin", () => restartServicesAsAdmin(), "请求管理员权限重启失败");
 safeHandle("app:enter-run-mode", () => enterRunMode(), "微信专用运行模式启动失败");
 safeHandle("app:exit-run-mode", () => exitRunMode(), "退出运行模式失败");
 safeHandle("task:pause", () => taskControl("pause"), "暂停任务失败");
