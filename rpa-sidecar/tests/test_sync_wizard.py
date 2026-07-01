@@ -83,3 +83,31 @@ def test_sync_wizard_reports_key_extract_failure_for_encrypted_contact_db():
     assert status["error_reason"] == "wechat_db_key_extract_failed"
     assert "管理员权限" in str(status["message"])
     assert status["sync_result"]["decrypt"]["summary"] == "结果: 0/17 salts 找到密钥"
+
+
+def test_sync_wizard_waits_for_logged_in_flag_not_just_detected_window():
+    events: list[str] = []
+    probes = [
+        {"detected": True, "logged_in": False},
+        {"detected": True, "logged_in": True},
+    ]
+
+    def login_probe(started_at: float | None = None) -> dict[str, object]:
+        events.append(f"probe:{started_at is not None}")
+        return probes.pop(0)
+
+    def sync_contacts(account_id: str = "auto", auto_decrypt: bool = True) -> dict[str, object]:
+        events.append("sync")
+        return {"success": True, "friend_count": 1, "excluded_count": 0}
+
+    wizard = SyncWizard(
+        restart_wechat=lambda: {"success": True},
+        login_probe=login_probe,
+        sync_contacts=sync_contacts,
+        sleep=lambda _seconds: None,
+    )
+
+    status = wizard.start(restart_wechat=True, timeout_seconds=3, run_async=False)
+
+    assert status["stage"] == "completed"
+    assert events == ["probe:True", "probe:True", "sync"]

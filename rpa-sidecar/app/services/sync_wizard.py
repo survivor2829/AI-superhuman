@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -11,7 +12,7 @@ class SyncWizard:
         self,
         *,
         restart_wechat: Callable[[], dict[str, object]],
-        login_probe: Callable[[], dict[str, object]],
+        login_probe: Callable[..., dict[str, object]],
         sync_contacts: Callable[..., dict[str, object]],
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -53,6 +54,7 @@ class SyncWizard:
 
     def _run(self, *, restart_wechat: bool, timeout_seconds: int) -> None:
         try:
+            login_started_at = time.time()
             if restart_wechat:
                 self._set_status("restarting_wechat", "正在重启微信", "正在关闭并重新打开微信")
                 restart_result = self.restart_wechat()
@@ -61,8 +63,16 @@ class SyncWizard:
                     return
 
             self._set_status("waiting_login", "等待微信登录", "请在微信里完成扫码或手机确认")
-            if not self._wait_for_login(timeout_seconds):
+            if not self._wait_for_login(timeout_seconds, started_at=login_started_at):
                 self._fail("wechat_login_timeout")
+                return
+
+            self._set_status("preparing_contact_db", "正在准备通讯录", "微信已登录，正在等待本地通讯录加载稳定")
+            settle_seconds = max(0.0, float(os.environ.get("WECHAT_LOGIN_SETTLE_SECONDS", "12")))
+            if settle_seconds:
+                self.sleep(settle_seconds)
+            if self._cancelled:
+                self._fail("sync_cancelled")
                 return
 
             self._set_status("syncing_contacts", "正在读取通讯录", "正在解密并读取本机微信通讯录")
@@ -88,17 +98,23 @@ class SyncWizard:
         except Exception as exc:
             self._fail(f"sync_wizard_error:{type(exc).__name__}")
 
-    def _wait_for_login(self, timeout_seconds: int) -> bool:
+    def _wait_for_login(self, timeout_seconds: int, *, started_at: float) -> bool:
         deadline = time.monotonic() + max(1, timeout_seconds)
         while time.monotonic() < deadline:
             if self._cancelled:
                 self._fail("sync_cancelled")
                 return False
-            probe = self.login_probe()
-            if bool(probe.get("detected")):
+            probe = self._login_probe(started_at=started_at)
+            if bool(probe.get("logged_in") if "logged_in" in probe else probe.get("detected")):
                 return True
             self.sleep(1)
         return False
+
+    def _login_probe(self, *, started_at: float) -> dict[str, object]:
+        try:
+            return self.login_probe(started_at=started_at)  # type: ignore[misc]
+        except TypeError:
+            return self.login_probe()
 
     def _fail(self, reason: str, *, extra: dict[str, object] | None = None) -> None:
         self._set_status("failed", "同步失败", self._human_reason(reason), extra={"error_reason": reason, **(extra or {})})

@@ -197,23 +197,37 @@ class WechatLocalContactExtractor:
         env["WECHAT_DECRYPT_NONINTERACTIVE"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         command = [sys.executable, "main.py", "decrypt"]
+        attempts = max(1, int(os.environ.get("WECHAT_DECRYPT_ATTEMPTS", "4")))
+        retry_delay = max(0.0, float(os.environ.get("WECHAT_DECRYPT_RETRY_DELAY_SECONDS", "5")))
+        last_result: dict[str, Any] | None = None
         try:
-            completed = subprocess.run(
-                command,
-                cwd=self.decrypt_tool_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=int(os.environ.get("WECHAT_DECRYPT_TIMEOUT_SECONDS", "180")),
-            )
-            return {
-                "success": completed.returncode == 0,
-                "returncode": completed.returncode,
-                "reason": "ok" if completed.returncode == 0 else "decrypt_command_failed",
-                "summary": self._decrypt_output_summary(completed.stdout, completed.stderr),
-            }
+            for attempt in range(1, attempts + 1):
+                completed = subprocess.run(
+                    command,
+                    cwd=self.decrypt_tool_dir,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=int(os.environ.get("WECHAT_DECRYPT_TIMEOUT_SECONDS", "180")),
+                )
+                last_result = {
+                    "success": completed.returncode == 0,
+                    "returncode": completed.returncode,
+                    "reason": "ok" if completed.returncode == 0 else "decrypt_command_failed",
+                    "summary": self._decrypt_output_summary(
+                        completed.stdout,
+                        completed.stderr,
+                        attempt=attempt,
+                        attempts=attempts,
+                    ),
+                }
+                if completed.returncode == 0:
+                    return last_result
+                if attempt < attempts and retry_delay:
+                    time.sleep(retry_delay)
+            return last_result or {"success": False, "reason": "decrypt_command_failed"}
         except Exception as exc:
             return {"success": False, "reason": f"decrypt_command_error:{type(exc).__name__}"}
         finally:
@@ -440,7 +454,7 @@ class WechatLocalContactExtractor:
         }
 
     @staticmethod
-    def _decrypt_output_summary(stdout: str, stderr: str) -> str:
+    def _decrypt_output_summary(stdout: str, stderr: str, *, attempt: int | None = None, attempts: int | None = None) -> str:
         text = f"{stdout}\n{stderr}"
         patterns = [
             r"结果:\s*\d+/\d+\s*salts\s*找到密钥",
@@ -450,6 +464,8 @@ class WechatLocalContactExtractor:
             r"无法打开进程\s*PID=\d+",
         ]
         matches: list[str] = []
+        if attempt is not None and attempts is not None:
+            matches.append(f"attempt {attempt}/{attempts}")
         for pattern in patterns:
             for match in re.findall(pattern, text):
                 if match not in matches:

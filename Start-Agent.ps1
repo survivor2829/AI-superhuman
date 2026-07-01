@@ -5,6 +5,26 @@ $backend = Join-Path $root "backend"
 $sidecar = Join-Path $root "rpa-sidecar"
 $desktop = Join-Path $root "desktop-client"
 
+function Import-DotEnv {
+    $envPath = Join-Path $root ".env"
+    if (-not (Test-Path $envPath)) {
+        return
+    }
+
+    Get-Content -Path $envPath -Encoding UTF8 | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) {
+            return
+        }
+        $name, $value = $line.Split("=", 2)
+        $name = $name.Trim()
+        $value = $value.Trim().Trim('"').Trim("'")
+        if ($name) {
+            [Environment]::SetEnvironmentVariable($name, $value, "Process")
+        }
+    }
+}
+
 function Stop-PortProcess {
     param(
         [int]$Port,
@@ -174,6 +194,8 @@ function Start-DesktopApp {
 
     Write-Host "Started desktop app"
 }
+
+Import-DotEnv
 
 Stop-DesktopApp
 Stop-PortProcess -Port 8710 -Name "Backend"

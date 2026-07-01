@@ -48,7 +48,7 @@ class WeixinAutomationDriver:
         self.dry_driver = DryRunAutomationDriver(account_id="wxid_test_001")
         self.sync_wizard = SyncWizard(
             restart_wechat=self._restart_wechat_for_sync,
-            login_probe=self.probe,
+            login_probe=self._sync_login_probe,
             sync_contacts=self.sync_contacts,
         )
 
@@ -171,6 +171,33 @@ class WeixinAutomationDriver:
         if self.dry_run:
             return {"success": True, "message": "dry_run_wechat_restarted"}
         return self.real_driver.restart_wechat()
+
+    def _sync_login_probe(self, *, started_at: float | None = None) -> dict[str, object]:
+        probe = self.probe()
+        accounts = self.local_accounts()
+        latest_account = accounts[0] if accounts else {}
+        last_active_at = str(latest_account.get("last_active_at") or "")
+        logged_in = bool(probe.get("detected")) and self._account_active_after(last_active_at, started_at)
+        return {
+            **probe,
+            "logged_in": logged_in,
+            "latest_account": latest_account,
+            "login_wait_reason": "" if logged_in else "waiting_for_account_activity",
+        }
+
+    @staticmethod
+    def _account_active_after(last_active_at: str, started_at: float | None) -> bool:
+        if not last_active_at:
+            return False
+        if started_at is None:
+            return True
+        try:
+            active_at = datetime.fromisoformat(last_active_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if active_at.tzinfo is None:
+            active_at = active_at.replace(tzinfo=UTC)
+        return active_at.timestamp() >= started_at - 2
 
     def execute(self, action: LocalAction) -> LocalActionResult:
         if self.dry_run:

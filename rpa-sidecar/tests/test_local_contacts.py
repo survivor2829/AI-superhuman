@@ -101,3 +101,15 @@ def test_sync_contacts_reads_contact_db_and_excludes_non_contacts(tmp_path):
     assert excluded["wxid_group_cache"] == "group_member_cache"
     assert excluded["wxid_deleted"] == "deleted_contact"
     assert {item["wxid"] for item in result["excluded"]} >= {"filehelper", "gh_public", "123@chatroom", "聊天记录"}
+
+
+def test_decrypt_summary_includes_retry_attempt():
+    summary = WechatLocalContactExtractor._decrypt_output_summary(
+        "结果: 0/17 salts 找到密钥\n[!] 未能从任何微信进程中提取到密钥",
+        "",
+        attempt=2,
+        attempts=4,
+    )
+
+    assert "attempt 2/4" in summary
+    assert "结果: 0/17 salts 找到密钥" in summary
