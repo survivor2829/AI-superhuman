@@ -384,6 +384,16 @@ class AgentStore:
             row = session.get(RuntimeSettingRow, key)
             return row.value if row is not None else default
 
+    def latest_synced_account_id(self) -> str:
+        with self.SessionLocal() as session:
+            row = session.scalar(
+                select(ContactRow.account_id)
+                .where(ContactRow.source == "wechat_local_contact_db")
+                .order_by(ContactRow.last_synced_at.desc(), ContactRow.created_at.desc())
+                .limit(1)
+            )
+            return str(row or "")
+
     def get_contact(self, contact_id: str) -> Contact | None:
         with self.SessionLocal() as session:
             row = session.get(ContactRow, contact_id)

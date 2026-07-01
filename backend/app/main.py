@@ -954,7 +954,7 @@ def _ignore_touch_interval() -> bool:
 
 
 def _active_wechat_account_id() -> str:
-    return store.get_runtime_setting("active_wechat_account_id", "")
+    return store.get_runtime_setting("active_wechat_account_id", "") or store.latest_synced_account_id()
 
 
 def _persist_sync_wizard_result(result: dict[str, object]) -> None:
