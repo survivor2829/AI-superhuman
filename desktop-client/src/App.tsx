@@ -283,19 +283,6 @@ export function App() {
       return;
     }
 
-    setNotice("正在校准微信窗口...");
-    await api.normalizeWindow();
-    await api.calibrateSendDriver();
-    const driver = await api.sendDriverProbe();
-    setSendDriverProbe(driver);
-    const allowedLimit = Math.min(3, driver.max_batch_size || 0);
-    if (allowedLimit < 1) {
-      setNotice(driver.message || "微信窗口还没校准好，未执行发送。");
-      setActiveView("settings");
-      return;
-    }
-    const runLimit = Math.max(1, allowedLimit);
-
     setNotice("正在生成本次发送名单...");
     const nextPlanId = await getOrCreatePlanId();
     const previewResult = await api.previewTouchPlan(nextPlanId);
@@ -332,6 +319,19 @@ export function App() {
       setNotice("已取消发送。");
       return;
     }
+
+    setNotice("正在校准微信窗口...");
+    await api.normalizeWindow();
+    await api.calibrateSendDriver();
+    const driver = await api.sendDriverProbe();
+    setSendDriverProbe(driver);
+    const allowedLimit = Math.min(3, driver.max_batch_size || 0);
+    if (allowedLimit < 1) {
+      setNotice(driver.message || "微信窗口还没校准好，未执行发送。");
+      setActiveView("settings");
+      return;
+    }
+    const runLimit = Math.max(1, allowedLimit);
 
     let electronRunMode = false;
     try {
