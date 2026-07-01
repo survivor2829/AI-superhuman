@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const appSource = readFileSync(resolve("src/App.tsx"), "utf8");
+const preloadSource = readFileSync(resolve("electron/preload.cjs"), "utf8");
+const electronMainSource = readFileSync(resolve("electron/main.cjs"), "utf8");
 
 const requiredSnippets = [
   "const CUSTOMER_STEPS",
@@ -21,6 +23,7 @@ const forbiddenCustomerCopy = ["Backend", "RPA Sidecar", "preflight", "payload h
 const customerActionBand = appSource.match(/<section className="action-band">([\s\S]*?)<\/section>/)?.[1] || "";
 const customerSendFlow = appSource.match(/const startCustomerSendFlow = async \(\) => runAction\("customer-start-send", async \(\) => \{([\s\S]*?)\n  \}\);/)?.[1] || "";
 const requiredPrimaryButtons = ["静默同步通讯录", "选择话术文件", "开始发送"];
+const requiredAdminSyncBridge = ["startContactSyncAdminHelper", "getContactSyncAdminResult"];
 const hiddenFromCustomerActionBand = [
   "导入默认话术",
   "生成预览",
@@ -37,12 +40,15 @@ const hiddenFromCustomerActionBand = [
 const missing = requiredSnippets.filter((snippet) => !appSource.includes(snippet));
 const forbidden = forbiddenCustomerCopy.filter((snippet) => appSource.includes(snippet));
 const missingPrimaryButtons = requiredPrimaryButtons.filter((snippet) => !customerActionBand.includes(snippet));
+const missingAdminSyncBridge = requiredAdminSyncBridge.filter((snippet) => {
+  return !appSource.includes(snippet) || !preloadSource.includes(snippet) || !electronMainSource.includes(snippet);
+});
 const visibleDebugButtons = hiddenFromCustomerActionBand.filter((snippet) => customerActionBand.includes(snippet));
 const confirmIndex = customerSendFlow.indexOf("window.confirm");
 const normalizeIndex = customerSendFlow.indexOf("api.normalizeWindow");
 const confirmBeforeWechatFocus = confirmIndex >= 0 && normalizeIndex >= 0 && confirmIndex < normalizeIndex;
 
-if (missing.length || forbidden.length || missingPrimaryButtons.length || visibleDebugButtons.length || !confirmBeforeWechatFocus) {
-  console.error(JSON.stringify({ missing, forbidden, missingPrimaryButtons, visibleDebugButtons, confirmBeforeWechatFocus }, null, 2));
+if (missing.length || forbidden.length || missingPrimaryButtons.length || missingAdminSyncBridge.length || visibleDebugButtons.length || !confirmBeforeWechatFocus) {
+  console.error(JSON.stringify({ missing, forbidden, missingPrimaryButtons, missingAdminSyncBridge, visibleDebugButtons, confirmBeforeWechatFocus }, null, 2));
   process.exit(1);
 }

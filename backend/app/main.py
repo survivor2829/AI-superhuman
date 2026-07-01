@@ -237,6 +237,26 @@ def sync_contacts(request: ContactSyncRequest = ContactSyncRequest()) -> dict[st
             "auto_decrypt": request.auto_decrypt,
         },
     )
+    if result.get("success") is False:
+        account = result.get("account") if isinstance(result.get("account"), dict) else {}
+        account_id = str(result.get("account_id") or account.get("account_id") or request.account_id or "auto")
+        return {
+            "success": False,
+            "reason": str(result.get("reason") or result.get("message") or "contact_sync_failed"),
+            "synced": 0,
+            "excluded": 0,
+            "friend_count": int(result.get("friend_count") or 0),
+            "excluded_count": int(result.get("excluded_count") or 0),
+            "group_member_excluded": int(result.get("group_member_excluded") or 0),
+            "system_excluded": int(result.get("system_excluded") or 0),
+            "filter_version": str(result.get("filter_version") or "wechat4_friend_only_v1"),
+            "contacts": [],
+            "mode": request.mode,
+            "account_id": account_id,
+            "needs_admin_helper": bool(result.get("needs_admin_helper")),
+            "diagnostic": result.get("diagnostic") if isinstance(result.get("diagnostic"), dict) else {},
+            "sidecar": result,
+        }
     contacts = result.get("contacts") or []
     excluded = result.get("excluded") or []
     account_id = str(result.get("account_id") or request.account_id or "auto")

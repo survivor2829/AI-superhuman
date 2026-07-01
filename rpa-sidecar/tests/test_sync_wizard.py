@@ -73,6 +73,13 @@ def test_sync_wizard_reports_key_extract_failure_for_encrypted_contact_db():
                 "reason": "decrypt_command_failed",
                 "summary": "结果: 0/17 salts 找到密钥",
             },
+            "account_id": "wxid_new",
+            "account_dir": "wxid_new_abcd",
+            "needs_admin_helper": True,
+            "diagnostic": {
+                "stage": "decrypt_key_extract_failed",
+                "next_action": "run_admin_contact_sync_helper",
+            },
         },
         sleep=lambda _seconds: None,
     )
@@ -81,8 +88,12 @@ def test_sync_wizard_reports_key_extract_failure_for_encrypted_contact_db():
 
     assert status["stage"] == "failed"
     assert status["error_reason"] == "wechat_db_key_extract_failed"
-    assert "管理员权限" in str(status["message"])
+    assert "管理员确认" in str(status["message"])
+    assert status["requires_admin_helper"] is True
+    assert status["admin_action"] == "start_contact_sync_admin_helper"
+    assert status["account_id"] == "wxid_new"
     assert status["sync_result"]["decrypt"]["summary"] == "结果: 0/17 salts 找到密钥"
+    assert status["sync_result"]["diagnostic"]["next_action"] == "run_admin_contact_sync_helper"
 
 
 def test_sync_wizard_waits_for_logged_in_flag_not_just_detected_window():

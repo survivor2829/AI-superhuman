@@ -98,14 +98,20 @@ class WechatLocalContactExtractor:
             db_path = self._readable_contact_db(account) if account else None
 
         if db_path is None:
+            account = account or {}
+            diagnostic = self._decrypt_failure_diagnostic(account, decrypt_result)
             return {
                 "success": False,
                 "mode": "local_db_full",
                 "reason": "contact_db_needs_decryption",
                 "contacts": [],
                 "excluded": [],
+                "account_id": str(account.get("account_id") or ""),
+                "account_dir": str(account.get("account_dir") or ""),
                 "account": account,
                 "decrypt": self._safe_decrypt_result(decrypt_result),
+                "needs_admin_helper": diagnostic["next_action"] == "run_admin_contact_sync_helper",
+                "diagnostic": diagnostic,
             }
 
         try:
@@ -452,6 +458,39 @@ class WechatLocalContactExtractor:
             "returncode": result.get("returncode"),
             "reason": result.get("reason"),
             "summary": result.get("summary") or "",
+        }
+
+    @staticmethod
+    def _decrypt_failure_diagnostic(account: dict[str, Any], result: dict[str, Any] | None) -> dict[str, str]:
+        decrypt_reason = str((result or {}).get("reason") or "")
+        summary = str((result or {}).get("summary") or "")
+        contact_db_found = bool(account.get("contact_db_found"))
+        contact_db_encrypted = bool(account.get("contact_db_encrypted"))
+        if not contact_db_found:
+            return {
+                "stage": "contact_db_missing",
+                "next_action": "login_wechat_and_retry",
+                "message": "没有找到当前微信账号的通讯录数据库，请确认微信已登录后重新同步。",
+            }
+        if contact_db_encrypted and decrypt_reason == "decrypt_command_failed":
+            return {
+                "stage": "decrypt_key_extract_failed",
+                "next_action": "run_admin_contact_sync_helper",
+                "message": "通讯录数据库已找到但仍是加密状态，需要管理员确认后读取本机微信通讯录。",
+                "summary": summary,
+            }
+        if contact_db_encrypted:
+            return {
+                "stage": "contact_db_encrypted",
+                "next_action": "run_admin_contact_sync_helper",
+                "message": "通讯录数据库已找到但尚未解密，需要管理员确认后继续同步。",
+                "summary": summary,
+            }
+        return {
+            "stage": "contact_db_unreadable",
+            "next_action": "retry_sync",
+            "message": "通讯录数据库暂时不可读取，请稍后重新同步。",
+            "summary": summary,
         }
 
     @staticmethod

@@ -148,3 +148,32 @@ def test_decrypt_retry_does_not_crash_between_attempts(tmp_path, monkeypatch):
     assert calls["count"] == 2
     assert result["reason"] == "decrypt_command_failed"
     assert "attempt 2/2" in result["summary"]
+
+
+def test_encrypted_contact_db_failed_decrypt_requests_admin_helper(tmp_path, monkeypatch):
+    root = tmp_path / "xwechat_files"
+    _create_key_db(root / "all_users" / "login" / "wxid_new" / "key_info.db")
+    contact_db = root / "wxid_new_abcd" / "db_storage" / "contact" / "contact.db"
+    contact_db.parent.mkdir(parents=True)
+    contact_db.write_bytes(b"encrypted-wechat-db")
+
+    def fake_decrypt(_account):
+        return {
+            "success": False,
+            "returncode": 1,
+            "reason": "decrypt_command_failed",
+            "summary": "结果: 0/17 salts 找到密钥；未能从任何微信进程中提取到密钥",
+        }
+
+    extractor = WechatLocalContactExtractor(root=root)
+    monkeypatch.setattr(extractor, "_run_decrypt", fake_decrypt)
+
+    result = extractor.sync_contacts(account_id="auto", auto_decrypt=True)
+
+    assert result["success"] is False
+    assert result["reason"] == "contact_db_needs_decryption"
+    assert result["account_id"] == "wxid_new"
+    assert result["account_dir"] == "wxid_new_abcd"
+    assert result["needs_admin_helper"] is True
+    assert result["diagnostic"]["stage"] == "decrypt_key_extract_failed"
+    assert result["diagnostic"]["next_action"] == "run_admin_contact_sync_helper"

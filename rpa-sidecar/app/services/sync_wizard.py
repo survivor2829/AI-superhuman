@@ -78,9 +78,20 @@ class SyncWizard:
             self._set_status("syncing_contacts", "正在读取通讯录", "正在解密并读取本机微信通讯录")
             result = self.sync_contacts(account_id="auto", auto_decrypt=True)
             if result.get("success") is False:
+                extra: dict[str, object] = {"sync_result": self._public_sync_result(result)}
+                if bool(result.get("needs_admin_helper")):
+                    extra.update(
+                        {
+                            "requires_admin_helper": True,
+                            "admin_action": "start_contact_sync_admin_helper",
+                            "account_id": str(result.get("account_id") or ""),
+                            "account_dir": str(result.get("account_dir") or ""),
+                            "diagnostic": result.get("diagnostic") if isinstance(result.get("diagnostic"), dict) else {},
+                        }
+                    )
                 self._fail(
                     self._failure_reason(result),
-                    extra={"sync_result": self._public_sync_result(result)},
+                    extra=extra,
                 )
                 return
 
@@ -141,17 +152,22 @@ class SyncWizard:
             "friend_count": 0,
             "excluded_count": 0,
             "error_reason": "",
+            "requires_admin_helper": False,
+            "admin_action": "",
+            "account_dir": "",
+            "diagnostic": {},
             "sync_result": {},
         }
 
     @staticmethod
     def _public_sync_result(result: dict[str, object]) -> dict[str, object]:
+        account = result.get("account") if isinstance(result.get("account"), dict) else {}
         return {
             "success": bool(result.get("success")),
             "reason": str(result.get("reason") or ""),
             "mode": str(result.get("mode") or ""),
-            "account_id": str(result.get("account_id") or ""),
-            "account_dir": str(result.get("account_dir") or ""),
+            "account_id": str(result.get("account_id") or account.get("account_id") or ""),
+            "account_dir": str(result.get("account_dir") or account.get("account_dir") or ""),
             "filter_version": str(result.get("filter_version") or "wechat4_friend_only_v1"),
             "sync_batch_id": str(result.get("sync_batch_id") or ""),
             "friend_count": int(result.get("friend_count") or 0),
@@ -159,6 +175,8 @@ class SyncWizard:
             "group_member_excluded": int(result.get("group_member_excluded") or 0),
             "system_excluded": int(result.get("system_excluded") or 0),
             "decrypt": result.get("decrypt") if isinstance(result.get("decrypt"), dict) else {},
+            "needs_admin_helper": bool(result.get("needs_admin_helper")),
+            "diagnostic": result.get("diagnostic") if isinstance(result.get("diagnostic"), dict) else {},
             "contacts": list(result.get("contacts") or []),
             "excluded": list(result.get("excluded") or []),
         }
@@ -180,7 +198,7 @@ class SyncWizard:
         labels = {
             "wechat_login_timeout": "没有等到微信登录成功，请重新点击同步并完成登录",
             "contact_db_needs_decryption": "联系人库还没有解密成功",
-            "wechat_db_key_extract_failed": "微信数据库密钥提取失败，请用管理员权限运行本软件后重新同步",
+            "wechat_db_key_extract_failed": "需要管理员确认后读取本机微信通讯录。请在弹窗里点“是”，软件会继续同步。",
             "wechat_local_account_not_found": "没有发现本机微信账号目录",
             "decrypt_tool_not_found": "缺少微信数据库解密工具",
             "sync_cancelled": "同步已取消",

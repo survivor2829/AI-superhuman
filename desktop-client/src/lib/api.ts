@@ -105,6 +105,8 @@ export type LocalWechatAccount = {
 };
 
 export type ContactSyncResponse = {
+  success?: boolean;
+  reason?: string;
   synced: number;
   excluded: number;
   friend_count: number;
@@ -115,6 +117,8 @@ export type ContactSyncResponse = {
   account_id: string;
   mode: string;
   contacts: Contact[];
+  needs_admin_helper?: boolean;
+  diagnostic?: Record<string, unknown>;
 };
 
 export type SyncWizardStatus = {
@@ -122,19 +126,48 @@ export type SyncWizardStatus = {
   stage_label: string;
   message: string;
   account_id?: string;
+  account_dir?: string;
   friend_count: number;
   excluded_count: number;
   error_reason?: string;
+  requires_admin_helper?: boolean;
+  admin_action?: string;
+  diagnostic?: Record<string, unknown>;
   synced?: number;
   sync_result?: {
     success?: boolean;
     reason?: string;
     account_id?: string;
+    account_dir?: string;
     friend_count?: number;
     excluded_count?: number;
     group_member_excluded?: number;
     system_excluded?: number;
+    needs_admin_helper?: boolean;
+    diagnostic?: Record<string, unknown>;
   };
+};
+
+export type AdminContactSyncResult = {
+  ok?: boolean;
+  success: boolean;
+  status?: string;
+  reason?: string;
+  message?: string;
+  account_id?: string;
+  account_dir?: string;
+  friend_count?: number;
+  excluded_count?: number;
+  group_member_excluded?: number;
+  system_excluded?: number;
+  completed_at?: string;
+  decrypt?: {
+    success?: boolean;
+    returncode?: number | null;
+    reason?: string;
+    summary?: string;
+  };
+  diagnostic?: Record<string, unknown>;
 };
 
 export type TaskRun = {
@@ -174,6 +207,8 @@ export type DesktopBridge = {
   startServices: () => Promise<{ ok: boolean }>;
   getServiceStatus: () => Promise<ServiceStatus>;
   restartServicesAsAdmin: () => Promise<{ ok: boolean; success?: boolean; message: string }>;
+  startContactSyncAdminHelper: () => Promise<{ ok: boolean; success?: boolean; message: string }>;
+  getContactSyncAdminResult: () => Promise<AdminContactSyncResult>;
   enterRunMode: () => Promise<Record<string, unknown>>;
   exitRunMode: () => Promise<{ ok: boolean }>;
   pauseTask: () => Promise<Record<string, unknown>>;

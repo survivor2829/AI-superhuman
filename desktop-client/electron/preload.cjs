@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld("agentDesktop", {
   startServices: () => ipcRenderer.invoke("app:start-services"),
   getServiceStatus: () => ipcRenderer.invoke("app:get-service-status"),
   restartServicesAsAdmin: () => ipcRenderer.invoke("app:restart-services-admin"),
+  startContactSyncAdminHelper: () => ipcRenderer.invoke("app:start-contact-sync-admin-helper"),
+  getContactSyncAdminResult: () => ipcRenderer.invoke("app:get-contact-sync-admin-result"),
   enterRunMode: () => ipcRenderer.invoke("app:enter-run-mode"),
   exitRunMode: () => ipcRenderer.invoke("app:exit-run-mode"),
   pauseTask: () => ipcRenderer.invoke("task:pause"),

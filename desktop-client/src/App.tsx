@@ -19,7 +19,7 @@ import {
   UsersRound
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AuditLog, AutoReplyItem, Contact, CurrentTaskStatus, EvidenceFile, Health, MomentsFeedItem, PromptImportResponse, SendDriverProbe, ServiceStatus, Settings, SyncWizardStatus, TaskEvent, TaskRun, TouchPreview, TouchQueueResponse, WindowProbe } from "./lib/api";
+import { api, AdminContactSyncResult, AuditLog, AutoReplyItem, Contact, CurrentTaskStatus, EvidenceFile, Health, MomentsFeedItem, PromptImportResponse, SendDriverProbe, ServiceStatus, Settings, SyncWizardStatus, TaskEvent, TaskRun, TouchPreview, TouchQueueResponse, WindowProbe } from "./lib/api";
 
 type ViewId = "home" | "prompt" | "contacts" | "send" | "reply" | "moments" | "results" | "settings";
 type ServiceState = "online" | "offline" | "checking";
@@ -231,6 +231,69 @@ export function App() {
     });
   };
 
+  const waitForAdminContactSync = async (failedStatus: SyncWizardStatus) => {
+    if (!window.agentDesktop) {
+      setNotice("当前需要管理员确认读取本机微信通讯录，请从桌面软件打开，不要用浏览器页面同步。");
+      return false;
+    }
+    setNotice("当前微信号是新账号，需要管理员确认后读取本机通讯录。请在弹窗里点击“是”。");
+    const launched = await window.agentDesktop.startContactSyncAdminHelper();
+    if (!launched.success) {
+      setNotice(launched.message || "管理员同步助手启动失败");
+      return false;
+    }
+
+    let lastResult: AdminContactSyncResult | null = null;
+    for (let index = 0; index < 160; index += 1) {
+      await delay(1500);
+      const result = await window.agentDesktop.getContactSyncAdminResult();
+      lastResult = result;
+      if (result.success) {
+        setNotice("管理员同步已完成，正在刷新客户名单...");
+        const persisted = await api.syncContacts();
+        if (persisted.success === false) {
+          setNotice(`管理员同步完成，但客户池刷新失败：${labelReason(persisted.reason)}`);
+          return false;
+        }
+        const friendCount = persisted.friend_count || persisted.synced || result.friend_count || 0;
+        const excludedCount = persisted.excluded_count || result.excluded_count || 0;
+        setSyncWizard({
+          stage: "completed",
+          stage_label: "同步完成",
+          message: `同步到 ${friendCount} 个微信好友，排除 ${excludedCount} 个非客户项`,
+          account_id: persisted.account_id || result.account_id || failedStatus.account_id,
+          account_dir: result.account_dir || failedStatus.account_dir,
+          friend_count: friendCount,
+          excluded_count: excludedCount,
+          error_reason: "",
+          synced: persisted.synced,
+          sync_result: {
+            success: true,
+            account_id: persisted.account_id || result.account_id,
+            account_dir: result.account_dir,
+            friend_count: friendCount,
+            excluded_count: excludedCount,
+            group_member_excluded: persisted.group_member_excluded || result.group_member_excluded || 0,
+            system_excluded: persisted.system_excluded || result.system_excluded || 0
+          }
+        });
+        setNotice(`同步完成：${friendCount} 个微信好友，排除 ${excludedCount} 个非客户项`);
+        await refresh();
+        setActiveView("contacts");
+        return true;
+      }
+      const waiting = result.reason === "waiting_admin_confirmation" || result.status === "waiting_admin_confirmation" || result.status === "not_started";
+      if (!waiting && result.reason) {
+        setNotice(`管理员同步未完成：${result.message || labelReason(result.reason)}`);
+        return false;
+      }
+      setNotice("等待管理员同步助手完成，请确认权限弹窗后稍等...");
+    }
+
+    setNotice(`管理员同步等待超时：${lastResult?.message || "请重新点击静默同步通讯录"}`);
+    return false;
+  };
+
   const syncContacts = async () => runAction("sync-contacts", async () => {
     setNotice("正在启动通讯录同步：会重启微信，请完成登录确认...");
     setActiveView("home");
@@ -248,6 +311,10 @@ export function App() {
         return;
       }
       if (status.stage === "failed" || status.stage === "cancelled") {
+        if (status.requires_admin_helper || status.sync_result?.needs_admin_helper || status.error_reason === "wechat_db_key_extract_failed") {
+          const recovered = await waitForAdminContactSync(status);
+          if (recovered) return;
+        }
         setNotice(`同步未完成：${status.message || labelReason(status.error_reason)}`);
         await refresh();
         setActiveView("contacts");
@@ -678,6 +745,9 @@ export function App() {
               <div className={`readiness-item ${syncWizard.stage === "completed" ? "step-done" : ""}`}><CheckCircle2 size={18} /><span>写入客户池</span></div>
             </div>
             <p className="plain-copy">{syncWizard.message}</p>
+            {(syncWizard.requires_admin_helper || syncWizard.sync_result?.needs_admin_helper) && (
+              <p className="muted">当前账号：{syncWizard.account_id || syncWizard.sync_result?.account_id || "-"}。这是新账号或没有缓存，需要弹出一次 Windows 管理员确认后继续同步。</p>
+            )}
             {syncWizard.stage === "completed" && <p className="muted">当前账号：{syncWizard.account_id || syncWizard.sync_result?.account_id || "-"}，同步到 {syncWizard.friend_count || syncWizard.synced || 0} 个微信好友。</p>}
           </section>
         )}

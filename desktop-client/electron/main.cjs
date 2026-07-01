@@ -10,6 +10,8 @@ const backendDir = path.join(rootDir, "backend");
 const sidecarDir = path.join(rootDir, "rpa-sidecar");
 const preloadPath = path.join(__dirname, "preload.cjs");
 const startAgentScript = path.join(rootDir, "Start-Agent.ps1");
+const adminContactSyncHelperScript = path.join(rootDir, "tools", "run_admin_contact_sync_helper.py");
+const adminContactSyncResultPath = path.join(rootDir, ".runtime", "contact_sync_admin_result.json");
 
 const BACKEND_URL = "http://127.0.0.1:8710";
 const SIDECAR_URL = "http://127.0.0.1:8720";
@@ -201,6 +203,88 @@ async function restartServicesAsAdmin() {
   };
 }
 
+function writeAdminSyncPendingResult() {
+  fs.mkdirSync(path.dirname(adminContactSyncResultPath), { recursive: true });
+  fs.writeFileSync(
+    adminContactSyncResultPath,
+    JSON.stringify(
+      {
+        success: false,
+        status: "waiting_admin_confirmation",
+        reason: "waiting_admin_confirmation",
+        message: "等待 Windows 管理员确认",
+        started_at: new Date().toISOString()
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+}
+
+async function startContactSyncAdminHelper() {
+  if (!fs.existsSync(adminContactSyncHelperScript)) {
+    return {
+      ok: false,
+      success: false,
+      message: "没有找到管理员同步助手，请检查软件目录是否完整。"
+    };
+  }
+  writeAdminSyncPendingResult();
+  const helperArgs = [
+    adminContactSyncHelperScript,
+    "--result",
+    adminContactSyncResultPath
+  ];
+  const argumentList = `@(${helperArgs.map(psSingleQuoted).join(",")})`;
+  const command = `Start-Process -FilePath ${psSingleQuoted("python.exe")} -Verb RunAs -WindowStyle Hidden -ArgumentList ${argumentList}`;
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+    {
+      cwd: rootDir,
+      windowsHide: true,
+      detached: true,
+      stdio: "ignore",
+      shell: false
+    }
+  );
+  child.unref();
+  appendMainLog("admin-contact-sync", "requested one-shot elevated helper");
+  return {
+    ok: true,
+    success: true,
+    message: "已弹出管理员确认，请点击“是”。确认后软件会自动继续同步。"
+  };
+}
+
+function getContactSyncAdminResult() {
+  if (!fs.existsSync(adminContactSyncResultPath)) {
+    return {
+      ok: true,
+      success: false,
+      status: "not_started",
+      reason: "not_started",
+      message: "管理员同步助手还没有启动。"
+    };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(adminContactSyncResultPath, "utf8"));
+    return {
+      ok: true,
+      ...parsed
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      success: false,
+      status: "result_unreadable",
+      reason: "result_unreadable",
+      message: error && error.message ? error.message : "管理员同步结果暂时不可读取。"
+    };
+  }
+}
+
 function spawnService(name, command, args, cwd, outLog, errLog) {
   const out = fs.openSync(outLog, "a");
   const err = fs.openSync(errLog, "a");
@@ -343,6 +427,8 @@ safeHandle("app:start-services", async () => {
 }, "本地服务启动失败");
 safeHandle("app:get-service-status", () => getServiceStatus(), "软件服务状态检查失败");
 safeHandle("app:restart-services-admin", () => restartServicesAsAdmin(), "请求管理员权限重启失败");
+safeHandle("app:start-contact-sync-admin-helper", () => startContactSyncAdminHelper(), "管理员同步助手启动失败");
+safeHandle("app:get-contact-sync-admin-result", () => getContactSyncAdminResult(), "管理员同步结果读取失败");
 safeHandle("app:enter-run-mode", () => enterRunMode(), "微信专用运行模式启动失败");
 safeHandle("app:exit-run-mode", () => exitRunMode(), "退出运行模式失败");
 safeHandle("task:pause", () => taskControl("pause"), "暂停任务失败");
