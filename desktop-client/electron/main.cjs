@@ -163,6 +163,27 @@ function psSingleQuoted(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+function resolvePythonExecutable() {
+  const candidates = [
+    process.env.PYTHON,
+    path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python314", "python.exe"),
+    "python.exe"
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (path.isAbsolute(candidate) && fs.existsSync(candidate)) return candidate;
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return "python.exe";
+}
+
+function psJsonWriteCommand(filePath, payload) {
+  const json = JSON.stringify(payload).replace(/'/g, "''");
+  return `[System.IO.File]::WriteAllText(${psSingleQuoted(filePath)}, '${json}', [System.Text.Encoding]::UTF8)`;
+}
+
 async function restartServicesAsAdmin() {
   if (!fs.existsSync(startAgentScript)) {
     return {
@@ -236,8 +257,23 @@ async function startContactSyncAdminHelper() {
     "--result",
     adminContactSyncResultPath
   ];
+  const pythonPath = resolvePythonExecutable();
   const argumentList = `@(${helperArgs.map(psSingleQuoted).join(",")})`;
-  const command = `Start-Process -FilePath ${psSingleQuoted("python.exe")} -Verb RunAs -WindowStyle Hidden -ArgumentList ${argumentList}`;
+  const cancelPayload = {
+    success: false,
+    status: "admin_confirmation_cancelled",
+    reason: "admin_confirmation_cancelled",
+    message: "没有完成 Windows 管理员确认，请重新点击静默同步通讯录并在弹窗里点击“是”。",
+    completed_at: new Date().toISOString()
+  };
+  const command = [
+    `$ErrorActionPreference = 'Stop'`,
+    `try {`,
+    `  Start-Process -FilePath ${psSingleQuoted(pythonPath)} -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList ${argumentList}`,
+    `} catch {`,
+    `  ${psJsonWriteCommand(adminContactSyncResultPath, cancelPayload)}`,
+    `}`
+  ].join("; ");
   const child = spawn(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],

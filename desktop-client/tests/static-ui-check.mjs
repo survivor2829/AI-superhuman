@@ -24,6 +24,7 @@ const customerActionBand = appSource.match(/<section className="action-band">([\
 const customerSendFlow = appSource.match(/const startCustomerSendFlow = async \(\) => runAction\("customer-start-send", async \(\) => \{([\s\S]*?)\n  \}\);/)?.[1] || "";
 const requiredPrimaryButtons = ["静默同步通讯录", "选择话术文件", "开始发送"];
 const requiredAdminSyncBridge = ["startContactSyncAdminHelper", "getContactSyncAdminResult"];
+const requiredAdminSyncLauncherSafety = ["resolvePythonExecutable", "admin_confirmation_cancelled", "-Wait"];
 const hiddenFromCustomerActionBand = [
   "导入默认话术",
   "生成预览",
@@ -43,12 +44,13 @@ const missingPrimaryButtons = requiredPrimaryButtons.filter((snippet) => !custom
 const missingAdminSyncBridge = requiredAdminSyncBridge.filter((snippet) => {
   return !appSource.includes(snippet) || !preloadSource.includes(snippet) || !electronMainSource.includes(snippet);
 });
+const missingAdminSyncLauncherSafety = requiredAdminSyncLauncherSafety.filter((snippet) => !electronMainSource.includes(snippet));
 const visibleDebugButtons = hiddenFromCustomerActionBand.filter((snippet) => customerActionBand.includes(snippet));
 const confirmIndex = customerSendFlow.indexOf("window.confirm");
 const normalizeIndex = customerSendFlow.indexOf("api.normalizeWindow");
 const confirmBeforeWechatFocus = confirmIndex >= 0 && normalizeIndex >= 0 && confirmIndex < normalizeIndex;
 
-if (missing.length || forbidden.length || missingPrimaryButtons.length || missingAdminSyncBridge.length || visibleDebugButtons.length || !confirmBeforeWechatFocus) {
-  console.error(JSON.stringify({ missing, forbidden, missingPrimaryButtons, missingAdminSyncBridge, visibleDebugButtons, confirmBeforeWechatFocus }, null, 2));
+if (missing.length || forbidden.length || missingPrimaryButtons.length || missingAdminSyncBridge.length || missingAdminSyncLauncherSafety.length || visibleDebugButtons.length || !confirmBeforeWechatFocus) {
+  console.error(JSON.stringify({ missing, forbidden, missingPrimaryButtons, missingAdminSyncBridge, missingAdminSyncLauncherSafety, visibleDebugButtons, confirmBeforeWechatFocus }, null, 2));
   process.exit(1);
 }
