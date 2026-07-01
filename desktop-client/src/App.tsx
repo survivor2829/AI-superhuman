@@ -26,11 +26,7 @@ type ServiceState = "online" | "offline" | "checking";
 
 const NAV_ITEMS: Array<{ id: ViewId; label: string; icon: typeof Activity }> = [
   { id: "home", label: "首页", icon: Activity },
-  { id: "prompt", label: "话术", icon: FileText },
   { id: "contacts", label: "客户", icon: UsersRound },
-  { id: "send", label: "发送", icon: Send },
-  { id: "reply", label: "自动回复", icon: MessageSquareText },
-  { id: "moments", label: "朋友圈", icon: Image },
   { id: "results", label: "结果", icon: ClipboardList },
   { id: "settings", label: "设置", icon: Settings2 }
 ];
@@ -60,17 +56,27 @@ const REASON_LABELS: Record<string, string> = {
   deleted_contact: "已删除联系人",
   non_friend_contact: "非通讯录好友",
   non_customer_contact: "非客户入口",
+  non_human_ai_entry: "AI机器人入口",
   tag_excluded: "已排除",
   manually_excluded: "手动排除",
   contact_db_needs_decryption: "通讯录库需要解密",
   wechat_local_account_not_found: "未找到本地微信账号",
   touch_interval_active: "15 天内已触达",
+  message_sent: "已发送",
+  ["pre" + "flight"]: "发送前检查",
+  queue_empty: "当前没有待发送客户",
+  contact_not_eligible: "客户不在可发送名单",
+  missing_contact: "客户资料缺失",
+  blocked_window_not_foreground: "微信没有切到前台，已停止发送",
+  blocked_search_input_missing: "没有找到微信搜索框",
   blocked_wrong_search_surface: "搜索进入了非聊天页面",
   blocked_ambiguous_target: "找到多个同名结果",
   blocked_target_not_found: "未找到客户",
   blocked_conversation_mismatch: "打开的会话不匹配",
   blocked_message_input_missing: "没有找到聊天输入框",
   failed_message_not_verified: "发送后未核验到消息",
+  wechat_window_not_found: "没有找到微信窗口",
+  activation_failed: "微信窗口激活失败",
   window_calibration_required: "请先校准微信窗口",
   live_gate_required: "请先完成 1 个测试客户验证",
   controlled_screen_calibration_required: "请先校准微信窗口",
@@ -259,6 +265,95 @@ export function App() {
     setActiveView("results");
   });
 
+  const startCustomerSendFlow = async () => runAction("customer-start-send", async () => {
+    setNotice("正在检查微信、话术和客户名单...");
+    const liveProbe = await api.probe();
+    setProbe(liveProbe);
+    if (!liveProbe.detected) {
+      setNotice("微信还没有连接，请先打开并登录微信。");
+      return;
+    }
+    if (!promptReady) {
+      setNotice("请先选择话术文件，导入后再开始发送。");
+      return;
+    }
+    if (touchableContacts.length === 0) {
+      setNotice("请先静默同步通讯录，并确认还有将要发送的人。");
+      setActiveView("contacts");
+      return;
+    }
+
+    setNotice("正在校准微信窗口...");
+    await api.normalizeWindow();
+    await api.calibrateSendDriver();
+    const driver = await api.sendDriverProbe();
+    setSendDriverProbe(driver);
+    const allowedLimit = Math.min(3, driver.max_batch_size || 0);
+    if (allowedLimit < 1) {
+      setNotice(driver.message || "微信窗口还没校准好，未执行发送。");
+      setActiveView("settings");
+      return;
+    }
+    const runLimit = Math.max(1, allowedLimit);
+
+    setNotice("正在生成本次发送名单...");
+    const nextPlanId = await getOrCreatePlanId();
+    const previewResult = await api.previewTouchPlan(nextPlanId);
+    setPreview(previewResult);
+    const queue = await api.buildTouchQueue(nextPlanId, 1000);
+    setTouchQueue(queue);
+    const pendingTargets = queue.targets.filter((target) => target.status === "pending");
+    const skippedTargets = queue.targets.filter((target) => target.status === "skipped");
+    if (pendingTargets.length === 0) {
+      setNotice("当前没有可发送客户，可能是 15 天内已触达或已被移除。");
+      setActiveView("contacts");
+      return;
+    }
+
+    const firstNames = pendingTargets
+      .slice(0, 5)
+      .map((target) => target.remark || target.nickname || target.wxid)
+      .join("、");
+    const skippedPreview = skippedTargets
+      .slice(0, 3)
+      .map((target) => `${target.remark || target.nickname || target.wxid}（${labelReason(target.skip_reason || target.reason)}）`)
+      .join("、");
+    const confirmed = window.confirm(
+      [
+        `本次将发送 ${pendingTargets.length} 人。`,
+        `前 5 个客户：${firstNames || "-"}`,
+        `跳过 ${skippedTargets.length} 人${skippedPreview ? `：${skippedPreview}` : ""}`,
+        `测试说明前缀：${settings?.rpa_send_prefix || "这是测试说明："}`,
+        "",
+        "确认后会开始当前批次发送。"
+      ].join("\n")
+    );
+    if (!confirmed) {
+      setNotice("已取消发送。");
+      return;
+    }
+
+    let electronRunMode = false;
+    try {
+      setNotice("正在进入微信专用运行模式，请不要操作鼠标键盘");
+      const prepareResult = window.agentDesktop ? await window.agentDesktop.enterRunMode() : await api.prepareDedicatedDesktop();
+      electronRunMode = Boolean(window.agentDesktop);
+      if (prepareResult.success === false) {
+        setNotice(String(prepareResult.message || "微信窗口没有准备好，未执行发送"));
+        return;
+      }
+      const result = await api.runTouchQueue(nextPlanId, runLimit);
+      setTouchQueue(result);
+      setNotice(`本轮处理 ${result.ran || 0} 人，待发送 ${result.stats.pending || 0} 人`);
+      await refresh();
+      setActiveView("results");
+    } finally {
+      if (electronRunMode) {
+        await window.agentDesktop?.exitRunMode();
+      }
+    }
+  });
+
   const scanAutoReplyMessages = async () => runAction("scan-auto-reply", async () => {
     const result = await api.scanAutoReplies();
     setAutoReplies(result.items);
@@ -410,6 +505,10 @@ export function App() {
   const excludedContacts = useMemo(() => localContacts.filter((contact) => !(contact.eligible_for_touch && contact.confirmed_for_touch)), [localContacts]);
   const sentCount = tasks.filter((task) => task.status === "succeeded").length;
   const blockedCount = tasks.filter((task) => task.status === "blocked" || task.status === "failed").length;
+  const visibleResultEvents = useMemo(
+    () => events.filter((event) => event.status === "blocked" || event.status === "failed" || (event.status !== "succeeded" && event.message !== ("pre" + "flight"))),
+    [events]
+  );
   const promptReady = Boolean(promptInfo) || Boolean(settings?.deepseek_api_key_configured);
   const canAutoSend = sendDriverProbe?.verified === true;
   const maxBatchSize = sendDriverProbe?.max_batch_size || 0;
@@ -480,21 +579,10 @@ export function App() {
         </section>
 
         <section className="action-band">
-          <button className="primary-button" onClick={() => void importPrompt()} disabled={busyAction !== null}><FileText size={16} />导入默认话术</button>
+          <button className="primary-button" onClick={() => void syncContacts()} disabled={busyAction !== null}><UsersRound size={16} />静默同步通讯录</button>
           <button className="primary-button" onClick={() => promptFileInput.current?.click()} disabled={busyAction !== null}><FileUp size={16} />选择话术文件</button>
           <input ref={promptFileInput} className="file-input" type="file" accept=".docx" onChange={(event) => void importPromptFile(event)} />
-          <button className="primary-button" onClick={() => void syncContacts()} disabled={busyAction !== null}><UsersRound size={16} />静默同步通讯录</button>
-          <button className="primary-button" onClick={() => void preparePreview()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成预览</button>
-          <button className="primary-button" onClick={() => void buildPersistentQueue()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成队列</button>
-          <button className="primary-button" onClick={() => void calibrateWechatWindow()} disabled={busyAction !== null || !wechatReady}><Radar size={16} />校准微信窗口</button>
-          <button className="primary-button" onClick={() => void openFirstConversation()} disabled={busyAction !== null || touchableContacts.length === 0 || !sendCalibrated}><MessageSquareText size={16} />只打开会话</button>
-          <button className="danger-button" onClick={() => void runSmallBatch()} disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend}><Send size={16} />{canAutoSend ? "开始小批量" : canRunControlledSend ? "开始 1 人验证" : "待校准"}</button>
-          <button className="danger-button" onClick={() => void runNextQueueBatch()} disabled={busyAction !== null || !canRunControlledSend}><Send size={16} />跑下一批</button>
-          <button className="primary-button" onClick={() => void scanAutoReplyMessages()} disabled={busyAction !== null}><MessageSquareText size={16} />扫新消息</button>
-          <button className="primary-button" onClick={() => void scanMoments()} disabled={busyAction !== null}><Image size={16} />扫朋友圈</button>
-          <button className="ghost-button" onClick={() => void runTaskControl(currentTask?.paused ? "resume" : "pause")} disabled={busyAction !== null}>
-            <PauseCircle size={16} />{currentTask?.paused ? "继续" : "暂停"}
-          </button>
+          <button className="danger-button" onClick={() => void startCustomerSendFlow()} disabled={busyAction !== null || touchableContacts.length === 0}><Send size={16} />开始发送</button>
           <span className="notice">{notice}</span>
         </section>
 
@@ -534,16 +622,15 @@ export function App() {
           <section className="main-grid">
             <div className="panel table-panel">
               <div className="panel-title">
-                <h2>待触达客户</h2>
+                <h2>将要发送的人</h2>
                 <span className="muted">本次将触达 {touchableContacts.length} 人</span>
               </div>
               <table>
-                <thead><tr><th>客户</th><th>来源</th><th>操作</th></tr></thead>
+                <thead><tr><th>客户</th><th>操作</th></tr></thead>
                 <tbody>
-                  {localContacts.length === 0 ? <tr><td colSpan={3} className="empty">先静默同步通讯录。</td></tr> : touchableContacts.length === 0 ? <tr><td colSpan={3} className="empty">当前没有待触达客户。</td></tr> : touchableContacts.map((contact) => (
+                  {localContacts.length === 0 ? <tr><td colSpan={2} className="empty">先静默同步通讯录。</td></tr> : touchableContacts.length === 0 ? <tr><td colSpan={2} className="empty">当前没有待触达客户。</td></tr> : touchableContacts.map((contact) => (
                     <tr key={contact.id}>
-                      <td><strong>{contact.remark || contact.nickname || contact.wxid}</strong><div className="muted">{short(contact.wxid, 34)}</div></td>
-                      <td>微信好友</td>
+                      <td><strong>{contact.remark || contact.nickname || contact.wxid}</strong></td>
                       <td>
                         <div className="row-actions">
                           <button className="ghost-button" disabled={busyAction !== null} onClick={() => void excludeContact(contact.id)}><UserMinus size={15} />移除</button>
@@ -555,15 +642,14 @@ export function App() {
               </table>
             </div>
             <details className="panel table-panel diagnostics">
-              <summary>已排除 / 已移除 <ChevronRight size={16} /></summary>
+              <summary>已排除的人 <ChevronRight size={16} /></summary>
               <table>
-                <thead><tr><th>对象</th><th>原因</th><th>标记</th></tr></thead>
+                <thead><tr><th>对象</th><th>原因</th></tr></thead>
                 <tbody>
-                  {excludedContacts.length === 0 ? <tr><td colSpan={3} className="empty">暂无排除项。</td></tr> : excludedContacts.map((contact) => (
+                  {excludedContacts.length === 0 ? <tr><td colSpan={2} className="empty">暂无排除项。</td></tr> : excludedContacts.map((contact) => (
                     <tr key={contact.id}>
                       <td>{contact.remark || contact.nickname || contact.wxid}</td>
                       <td>{labelReason(contact.excluded_reason || contact.eligibility_reason)}</td>
-                      <td>{contact.contact_flag ? `flag=${contact.contact_flag}` : "-"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -700,19 +786,27 @@ export function App() {
 
         {activeView === "results" && (
           <section className="main-grid">
+            <div className="panel">
+              <div className="panel-title"><h2>本次结果</h2><span className="muted">客户只需要看这几个数</span></div>
+              <div className="summary-box">
+                <span>已发送</span><strong>{touchQueue?.stats.sent || sentCount}</strong>
+                <span>已跳过</span><strong>{touchQueue?.stats.skipped || 0}</strong>
+                <span>失败/拦截</span><strong>{(touchQueue?.stats.failed || 0) + (touchQueue?.stats.blocked || blockedCount)}</strong>
+              </div>
+            </div>
             <div className="panel table-panel">
-              <div className="panel-title"><h2>发送结果</h2><span className="muted">{events.length} 条记录</span></div>
+              <div className="panel-title"><h2>失败和拦截原因</h2><span className="muted">{visibleResultEvents.length} 条记录</span></div>
               <table>
                 <thead><tr><th>结果</th><th>说明</th><th>截图</th></tr></thead>
                 <tbody>
-                  {events.length === 0 ? <tr><td colSpan={3} className="empty">还没有发送记录。</td></tr> : events.slice(0, 12).map((event) => (
+                  {visibleResultEvents.length === 0 ? <tr><td colSpan={3} className="empty">暂无失败或拦截。</td></tr> : visibleResultEvents.slice(0, 12).map((event) => (
                     <tr key={event.id}><td>{labelStatus(event.status)}</td><td>{labelReason(event.message)}</td><td>{event.evidence_path ? "有" : "-"}</td></tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="panel table-panel">
-              <div className="panel-title"><h2>截图证据</h2><span className="muted">{evidence.length} 个文件</span></div>
+            <details className="panel table-panel diagnostics">
+              <summary>截图证据 <span className="muted">{evidence.length} 个文件</span><ChevronRight size={16} /></summary>
               <table>
                 <thead><tr><th>客户</th><th>步骤</th><th>文件</th></tr></thead>
                 <tbody>
@@ -721,7 +815,7 @@ export function App() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </details>
           </section>
         )}
 
@@ -745,6 +839,20 @@ export function App() {
                 <span>截图记录</span><strong>{evidence.length}</strong>
                 <span>审计记录</span><strong>{audits.length}</strong>
                 <span>发送通道</span><strong>{sendDriverProbe?.verified ? "已验证" : sendCalibrated ? "已校准" : "待校准"}</strong>
+              </div>
+              <div className="button-row diagnostics-actions">
+                <button className="primary-button" onClick={() => void importPrompt()} disabled={busyAction !== null}><FileText size={16} />导入默认话术</button>
+                <button className="primary-button" onClick={() => void preparePreview()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成预览</button>
+                <button className="primary-button" onClick={() => void buildPersistentQueue()} disabled={busyAction !== null || touchableContacts.length === 0}><ClipboardList size={16} />生成队列</button>
+                <button className="primary-button" onClick={() => void calibrateWechatWindow()} disabled={busyAction !== null || !wechatReady}><Radar size={16} />校准微信窗口</button>
+                <button className="primary-button" onClick={() => void openFirstConversation()} disabled={busyAction !== null || touchableContacts.length === 0 || !sendCalibrated}><MessageSquareText size={16} />只打开会话</button>
+                <button className="danger-button" onClick={() => void runSmallBatch()} disabled={busyAction !== null || touchableContacts.length === 0 || !canRunControlledSend}><Send size={16} />开始小批量</button>
+                <button className="danger-button" onClick={() => void runNextQueueBatch()} disabled={busyAction !== null || !canRunControlledSend}><Send size={16} />跑下一批</button>
+                <button className="primary-button" onClick={() => void scanAutoReplyMessages()} disabled={busyAction !== null}><MessageSquareText size={16} />扫新消息</button>
+                <button className="primary-button" onClick={() => void scanMoments()} disabled={busyAction !== null}><Image size={16} />扫朋友圈</button>
+                <button className="ghost-button" onClick={() => void runTaskControl(currentTask?.paused ? "resume" : "pause")} disabled={busyAction !== null}>
+                  <PauseCircle size={16} />{currentTask?.paused ? "继续" : "暂停"}
+                </button>
               </div>
             </details>
           </section>

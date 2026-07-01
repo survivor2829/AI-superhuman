@@ -224,6 +224,9 @@ class AgentStore:
         eligibility = self.classify_contact_eligibility(
             wxid=wxid,
             nickname=nickname,
+            remark=remark,
+            alias=alias,
+            raw_wxid=raw_wxid,
             tags=tags or [],
             local_type=local_type,
             contact_flag=contact_flag,
@@ -321,6 +324,9 @@ class AgentStore:
                 eligibility = self.classify_contact_eligibility(
                     wxid=wxid,
                     nickname=nickname,
+                    remark=row.remark,
+                    alias=row.alias,
+                    raw_wxid=row.raw_wxid,
                     tags=tags,
                     local_type=row.local_type,
                     contact_flag=row.contact_flag,
@@ -684,6 +690,9 @@ class AgentStore:
                 eligibility = self.classify_contact_eligibility(
                     wxid=row.wxid,
                     nickname=row.nickname,
+                    remark=row.remark,
+                    alias=row.alias,
+                    raw_wxid=row.raw_wxid,
                     tags=tags,
                     local_type=row.local_type,
                     contact_flag=row.contact_flag,
@@ -864,16 +873,26 @@ class AgentStore:
         *,
         wxid: str,
         nickname: str = "",
+        remark: str = "",
+        alias: str = "",
+        raw_wxid: str = "",
         tags: list[str] | None = None,
         local_type: int | None = None,
         contact_flag: int | None = None,
         delete_flag: int | None = None,
     ) -> dict[str, object]:
-        value = f"{wxid} {nickname}".strip()
+        value = f"{wxid} {nickname} {remark} {alias} {raw_wxid}".strip()
+        normalized_value = value.casefold()
+        normalized_ids = [wxid.casefold(), raw_wxid.casefold()]
         ui_artifacts = {"聊天记录", "从手机导入聊天记录", "语音通话", "聊天信息"}
         system_ids = {"filehelper", "weixin", "fmessage", "medianote", "floatbottle", "notifymessage"}
         blocked_exact = {"文件传输助手", "微信团队", "腾讯新闻", *ui_artifacts}
         blocked_contains = ["公众号", "服务通知", "订阅号", "群聊", "搜一搜", "功能", "搜索网络结果"]
+        ai_entry_markers = ["clawbot", "微信clawbot", "ai入口", "ai助手", "机器人"]
+        if any(identifier.endswith("@weclaw") for identifier in normalized_ids):
+            return {"eligible": False, "reason": "non_human_ai_entry"}
+        if any(marker.casefold() in normalized_value for marker in ai_entry_markers):
+            return {"eligible": False, "reason": "non_human_ai_entry"}
         if wxid in ui_artifacts or nickname in ui_artifacts:
             return {"eligible": False, "reason": "non_contact_ui_artifact"}
         if wxid in system_ids:

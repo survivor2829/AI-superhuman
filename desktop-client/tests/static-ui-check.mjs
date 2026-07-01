@@ -16,11 +16,27 @@ const requiredSnippets = [
 ];
 
 const forbiddenCustomerCopy = ["Backend", "RPA Sidecar", "preflight", "payload hash", "已加入发送名单", ">加入<"];
+const customerActionBand = appSource.match(/<section className="action-band">([\s\S]*?)<\/section>/)?.[1] || "";
+const requiredPrimaryButtons = ["静默同步通讯录", "选择话术文件", "开始发送"];
+const hiddenFromCustomerActionBand = [
+  "导入默认话术",
+  "生成预览",
+  "生成队列",
+  "校准微信窗口",
+  "只打开会话",
+  "开始小批量",
+  "跑下一批",
+  "扫新消息",
+  "扫朋友圈",
+  "暂停",
+];
 
 const missing = requiredSnippets.filter((snippet) => !appSource.includes(snippet));
 const forbidden = forbiddenCustomerCopy.filter((snippet) => appSource.includes(snippet));
+const missingPrimaryButtons = requiredPrimaryButtons.filter((snippet) => !customerActionBand.includes(snippet));
+const visibleDebugButtons = hiddenFromCustomerActionBand.filter((snippet) => customerActionBand.includes(snippet));
 
-if (missing.length || forbidden.length) {
-  console.error(JSON.stringify({ missing, forbidden }, null, 2));
+if (missing.length || forbidden.length || missingPrimaryButtons.length || visibleDebugButtons.length) {
+  console.error(JSON.stringify({ missing, forbidden, missingPrimaryButtons, visibleDebugButtons }, null, 2));
   process.exit(1);
 }

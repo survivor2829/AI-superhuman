@@ -93,3 +93,47 @@ def test_removed_local_contact_is_not_touchable(tmp_path):
     )
 
     assert [contact.wxid for contact in confirmed] == ["wxid_bob"]
+
+
+def test_weclaw_and_clawbot_entries_are_excluded_from_touch(tmp_path):
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+
+    saved = store.upsert_synced_contacts(
+        account_id="wxid_local",
+        contacts=[
+            {
+                "wxid": "mmo9cq805PqpJkKqsOzimYa5lsjxjE@weclaw",
+                "nickname": "微信ClawBot",
+                "remark": "小猫",
+                "source": "wechat_local_contact_db",
+                "raw_wxid": "mmo9cq805PqpJkKqsOzimYa5lsjxjE@weclaw",
+                "local_type": 1,
+                "contact_flag": 1,
+                "delete_flag": 0,
+            },
+            {
+                "wxid": "wxid_real_customer",
+                "nickname": "真实客户",
+                "source": "wechat_local_contact_db",
+                "local_type": 1,
+                "contact_flag": 3,
+                "delete_flag": 0,
+            },
+        ],
+        auto_confirm=True,
+    )
+
+    bot = next(contact for contact in saved if contact.wxid.endswith("@weclaw"))
+    real = next(contact for contact in saved if contact.wxid == "wxid_real_customer")
+    confirmed = store.list_contacts(
+        eligible_for_touch=True,
+        confirmed_for_touch=True,
+        source="wechat_local_contact_db",
+    )
+
+    assert bot.eligible_for_touch is False
+    assert bot.confirmed_for_touch is False
+    assert bot.eligibility_reason == "non_human_ai_entry"
+    assert real.eligible_for_touch is True
+    assert [contact.wxid for contact in confirmed] == ["wxid_real_customer"]

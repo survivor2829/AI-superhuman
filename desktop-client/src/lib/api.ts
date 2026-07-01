@@ -209,6 +209,7 @@ export type TouchQueueTarget = TouchPreviewTarget & {
   id: string;
   plan_id: string;
   status: string;
+  remark?: string;
   skip_reason?: string;
   last_touched_at?: string;
 };

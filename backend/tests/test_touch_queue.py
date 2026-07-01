@@ -104,3 +104,46 @@ def test_run_touch_queue_sends_pending_targets_and_marks_sent(monkeypatch, tmp_p
     assert target is not None
     assert target["status"] == "sent"
     assert target["last_touched_at"] is not None
+
+
+def test_run_touch_queue_skips_stale_non_human_entries_before_sending(monkeypatch, tmp_path):
+    import app.main as main
+
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    _save_profile(store)
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "llm", FakeLLM())
+    contact = store.upsert_synced_contacts(
+        account_id="wxid_local",
+        contacts=[
+            {
+                "wxid": "mmo9cq805PqpJkKqsOzimYa5lsjxjE@weclaw",
+                "nickname": "微信ClawBot",
+                "remark": "小猫",
+                "source": "wechat_local_contact_db",
+                "local_type": 1,
+                "contact_flag": 1,
+                "delete_flag": 0,
+            }
+        ],
+        auto_confirm=True,
+    )[0]
+    store.upsert_plan_target(plan_id="plan_queue", contact_id=contact.id, status="pending")
+    sent_calls: list[AutomationAction] = []
+
+    def fake_send(action: AutomationAction) -> dict:
+        sent_calls.append(action)
+        return {"task": {"id": "task_1", "status": "succeeded"}, "sidecar": {"success": True, "verification_status": "verified"}}
+
+    monkeypatch.setattr(main, "send_message", fake_send)
+
+    response = main.run_touch_queue("plan_queue", main.TouchQueueRunRequest(limit=1))
+
+    assert sent_calls == []
+    assert response["results"][0]["status"] == "skipped"
+    assert response["results"][0]["reason"] == "non_human_ai_entry"
+    target = store.get_plan_target(plan_id="plan_queue", contact_id=contact.id)
+    assert target is not None
+    assert target["status"] == "skipped"
+    assert target["skip_reason"] == "non_human_ai_entry"

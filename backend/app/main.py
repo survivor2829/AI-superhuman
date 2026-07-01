@@ -451,6 +451,11 @@ def run_touch_queue(plan_id: str, request: TouchQueueRunRequest) -> dict[str, ob
             store.update_plan_target_status(plan_id=plan_id, contact_id=str(row["contact_id"]), status="failed", skip_reason="missing_contact")
             results.append({"contact_id": row["contact_id"], "status": "failed", "reason": "missing_contact"})
             continue
+        if not (contact.eligible_for_touch and contact.confirmed_for_touch and contact.source == "wechat_local_contact_db"):
+            reason = contact.excluded_reason or contact.eligibility_reason or "contact_not_eligible"
+            store.update_plan_target_status(plan_id=plan_id, contact_id=contact.id, status="skipped", skip_reason=reason)
+            results.append({"contact_id": contact.id, "wxid": contact.wxid, "status": "skipped", "reason": reason})
+            continue
         decision = planner.evaluate(plan_id=plan_id, contact_id=contact.id)
         if not decision.allowed:
             store.update_plan_target_status(
