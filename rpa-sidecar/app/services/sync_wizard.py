@@ -68,7 +68,10 @@ class SyncWizard:
             self._set_status("syncing_contacts", "正在读取通讯录", "正在解密并读取本机微信通讯录")
             result = self.sync_contacts(account_id="auto", auto_decrypt=True)
             if result.get("success") is False:
-                self._fail(str(result.get("reason") or "contact_sync_failed"), extra={"sync_result": self._public_sync_result(result)})
+                self._fail(
+                    self._failure_reason(result),
+                    extra={"sync_result": self._public_sync_result(result)},
+                )
                 return
 
             self._set_status(
@@ -139,15 +142,29 @@ class SyncWizard:
             "excluded_count": int(result.get("excluded_count") or len(result.get("excluded") or [])),
             "group_member_excluded": int(result.get("group_member_excluded") or 0),
             "system_excluded": int(result.get("system_excluded") or 0),
+            "decrypt": result.get("decrypt") if isinstance(result.get("decrypt"), dict) else {},
             "contacts": list(result.get("contacts") or []),
             "excluded": list(result.get("excluded") or []),
         }
+
+    @staticmethod
+    def _failure_reason(result: dict[str, object]) -> str:
+        reason = str(result.get("reason") or "contact_sync_failed")
+        decrypt = result.get("decrypt") if isinstance(result.get("decrypt"), dict) else {}
+        if reason == "contact_db_needs_decryption" and isinstance(decrypt, dict):
+            decrypt_reason = str(decrypt.get("reason") or "")
+            if decrypt_reason == "decrypt_command_failed":
+                return "wechat_db_key_extract_failed"
+            if decrypt_reason:
+                return decrypt_reason
+        return reason
 
     @staticmethod
     def _human_reason(reason: str) -> str:
         labels = {
             "wechat_login_timeout": "没有等到微信登录成功，请重新点击同步并完成登录",
             "contact_db_needs_decryption": "联系人库还没有解密成功",
+            "wechat_db_key_extract_failed": "微信数据库密钥提取失败，请用管理员权限运行本软件后重新同步",
             "wechat_local_account_not_found": "没有发现本机微信账号目录",
             "decrypt_tool_not_found": "缺少微信数据库解密工具",
             "sync_cancelled": "同步已取消",

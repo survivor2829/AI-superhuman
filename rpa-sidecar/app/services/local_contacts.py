@@ -212,6 +212,7 @@ class WechatLocalContactExtractor:
                 "success": completed.returncode == 0,
                 "returncode": completed.returncode,
                 "reason": "ok" if completed.returncode == 0 else "decrypt_command_failed",
+                "summary": self._decrypt_output_summary(completed.stdout, completed.stderr),
             }
         except Exception as exc:
             return {"success": False, "reason": f"decrypt_command_error:{type(exc).__name__}"}
@@ -435,4 +436,22 @@ class WechatLocalContactExtractor:
             "success": bool(result.get("success")),
             "returncode": result.get("returncode"),
             "reason": result.get("reason"),
+            "summary": result.get("summary") or "",
         }
+
+    @staticmethod
+    def _decrypt_output_summary(stdout: str, stderr: str) -> str:
+        text = f"{stdout}\n{stderr}"
+        patterns = [
+            r"结果:\s*\d+/\d+\s*salts\s*找到密钥",
+            r"密钥提取失败:\s*[^\r\n]+",
+            r"未能提取到任何密钥",
+            r"未能从任何微信进程中提取到密钥",
+            r"无法打开进程\s*PID=\d+",
+        ]
+        matches: list[str] = []
+        for pattern in patterns:
+            for match in re.findall(pattern, text):
+                if match not in matches:
+                    matches.append(match)
+        return "；".join(matches[:4])

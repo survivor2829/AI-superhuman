@@ -60,6 +60,7 @@ const REASON_LABELS: Record<string, string> = {
   tag_excluded: "已排除",
   manually_excluded: "手动排除",
   contact_db_needs_decryption: "通讯录库需要解密",
+  wechat_db_key_extract_failed: "微信数据库密钥提取失败，请用管理员权限运行本软件后重新同步",
   wechat_local_account_not_found: "未找到本地微信账号",
   touch_interval_active: "15 天内已触达",
   message_sent: "已发送",
