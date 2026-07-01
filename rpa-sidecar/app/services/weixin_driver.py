@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 import ctypes
 from dataclasses import dataclass, field
@@ -530,6 +531,25 @@ class RealAutomationDriver:
 
     def sync_contacts(self, *, account_id: str = "auto", auto_decrypt: bool = True) -> dict[str, object]:
         return self.local_contact_extractor.sync_contacts(account_id=account_id, auto_decrypt=auto_decrypt)
+
+    def restart_wechat(self) -> dict[str, object]:
+        probe = self.probe_driver.probe()
+        exe_path = os.environ.get("WECHAT_EXE_PATH") or probe.path
+        process_name = f"{self.probe_driver.process_name}.exe"
+        if os.name == "nt":
+            try:
+                if probe.pid:
+                    subprocess.run(["taskkill", "/PID", str(probe.pid), "/T", "/F"], capture_output=True, timeout=10)
+                else:
+                    subprocess.run(["taskkill", "/IM", process_name, "/T", "/F"], capture_output=True, timeout=10)
+            except Exception:
+                pass
+            time.sleep(1.5)
+            if exe_path and Path(str(exe_path)).exists():
+                subprocess.Popen([str(exe_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return {"success": True, "message": "wechat_restarted", "path": str(exe_path)}
+            return {"success": False, "reason": "wechat_exe_path_not_found", "path": str(exe_path or "")}
+        return {"success": False, "reason": "restart_wechat_only_supported_on_windows"}
 
     def send_driver_probe(self) -> dict[str, object]:
         return build_controlled_screen_send_driver_probe(self.controlled_screen_state)

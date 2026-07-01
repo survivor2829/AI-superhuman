@@ -12,6 +12,8 @@ export type Settings = {
   wechat_window_title: string;
   rpa_dry_run: boolean;
   contact_touch_interval_days: number;
+  touch_interval_mode: "test_ignore" | "production";
+  active_wechat_account_id?: string;
   rpa_send_prefix: string;
   prompt_docx_path: string;
 };
@@ -113,6 +115,26 @@ export type ContactSyncResponse = {
   account_id: string;
   mode: string;
   contacts: Contact[];
+};
+
+export type SyncWizardStatus = {
+  stage: string;
+  stage_label: string;
+  message: string;
+  account_id?: string;
+  friend_count: number;
+  excluded_count: number;
+  error_reason?: string;
+  synced?: number;
+  sync_result?: {
+    success?: boolean;
+    reason?: string;
+    account_id?: string;
+    friend_count?: number;
+    excluded_count?: number;
+    group_member_excluded?: number;
+    system_excluded?: number;
+  };
 };
 
 export type TaskRun = {
@@ -295,6 +317,7 @@ export const api = {
   backendHealth: () => getJson<Health>(`${BACKEND_URL}/health`),
   sidecarHealth: () => getJson<Health>(`${SIDECAR_URL}/health`),
   settings: () => getJson<Settings>(`${BACKEND_URL}/settings`),
+  setTouchIntervalMode: (mode: "test_ignore" | "production") => postJson<Settings>(`${BACKEND_URL}/settings/touch-interval-mode`, { mode }),
   probe: () => getJson<WindowProbe>(`${BACKEND_URL}/wechat/window/probe`),
   normalizeWindow: () => postJson<Record<string, unknown>>(`${BACKEND_URL}/wechat/window/normalize`, {}),
   prepareDedicatedDesktop: () => postJson<Record<string, unknown>>(`${BACKEND_URL}/wechat/window/prepare-dedicated-desktop`, {}),
@@ -308,6 +331,12 @@ export const api = {
     auto_confirm: true,
     auto_decrypt: true
   }),
+  startSyncWizard: () => postJson<SyncWizardStatus>(`${BACKEND_URL}/wechat/sync-wizard/start`, {
+    restart_wechat: true,
+    timeout_seconds: 180
+  }),
+  syncWizardStatus: () => getJson<SyncWizardStatus>(`${BACKEND_URL}/wechat/sync-wizard/status`),
+  cancelSyncWizard: () => postJson<SyncWizardStatus>(`${BACKEND_URL}/wechat/sync-wizard/cancel`, {}),
   confirmContact: (contactId: string) => postJson<Contact>(`${BACKEND_URL}/wechat/contacts/${contactId}/confirm-touch`, {}),
   excludeContact: (contactId: string) => postJson<Contact>(`${BACKEND_URL}/wechat/contacts/${contactId}/exclude-touch`, {}),
   importPrompt: () => postJson<PromptImportResponse>(`${BACKEND_URL}/prompts/import-docx`, {}),

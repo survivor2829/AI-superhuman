@@ -31,6 +31,7 @@ class AgentSettings:
     wechat_window_title: str
     rpa_dry_run: bool
     contact_touch_interval_days: int
+    touch_interval_mode: str
     rpa_send_prefix: str
     prompt_docx_path: Path
 
@@ -54,6 +55,7 @@ class AgentSettings:
             wechat_window_title=get("WECHAT_WINDOW_TITLE", "微信"),
             rpa_dry_run=get("RPA_DRY_RUN", "false").lower() in {"1", "true", "yes"},
             contact_touch_interval_days=int(get("CONTACT_TOUCH_INTERVAL_DAYS", "15")),
+            touch_interval_mode=get("TOUCH_INTERVAL_MODE", "production"),
             rpa_send_prefix=get("RPA_SEND_PREFIX", "这是测试说明："),
             prompt_docx_path=Path(get("PROMPT_DOCX_PATH", str(Path.home() / "Desktop" / "搭建提示词_玺联惠创客合伙人版_仅改蓝字.docx"))),
         )
@@ -70,6 +72,7 @@ class AgentSettings:
             "wechat_window_title": self.wechat_window_title,
             "rpa_dry_run": self.rpa_dry_run,
             "contact_touch_interval_days": self.contact_touch_interval_days,
+            "touch_interval_mode": self.touch_interval_mode,
             "rpa_send_prefix": self.rpa_send_prefix,
             "prompt_docx_path": str(self.prompt_docx_path),
         }

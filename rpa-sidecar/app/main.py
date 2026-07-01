@@ -22,6 +22,11 @@ class ContactSyncRequest(BaseModel):
     auto_decrypt: bool = True
 
 
+class SyncWizardStartRequest(BaseModel):
+    restart_wechat: bool = True
+    timeout_seconds: int = 180
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "rpa-sidecar", "mode": "dry_run" if driver.dry_run else "real"}
@@ -65,6 +70,24 @@ def local_accounts() -> dict[str, object]:
 @app.post("/wechat/contacts/sync")
 def sync_contacts(request: ContactSyncRequest) -> dict[str, object]:
     return driver.sync_contacts(account_id=request.account_id, auto_decrypt=request.auto_decrypt)
+
+
+@app.post("/wechat/sync-wizard/start")
+def start_sync_wizard(request: SyncWizardStartRequest) -> dict[str, object]:
+    return driver.start_sync_wizard(
+        restart_wechat=request.restart_wechat,
+        timeout_seconds=request.timeout_seconds,
+    )
+
+
+@app.get("/wechat/sync-wizard/status")
+def sync_wizard_status() -> dict[str, object]:
+    return driver.sync_wizard_status()
+
+
+@app.post("/wechat/sync-wizard/cancel")
+def cancel_sync_wizard() -> dict[str, object]:
+    return driver.cancel_sync_wizard()
 
 
 @app.get("/wechat/chat/sessions")

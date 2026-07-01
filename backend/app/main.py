@@ -73,6 +73,15 @@ class ContactSyncRequest(BaseModel):
     auto_decrypt: bool = True
 
 
+class SyncWizardStartRequest(BaseModel):
+    restart_wechat: bool = True
+    timeout_seconds: int = Field(default=180, ge=30, le=600)
+
+
+class TouchIntervalModeRequest(BaseModel):
+    mode: str
+
+
 class TaskControlRequest(BaseModel):
     action: str
 
@@ -101,7 +110,20 @@ def health() -> dict[str, str]:
 
 @app.get("/settings")
 def public_settings() -> dict[str, object]:
-    return settings.public_dict()
+    return {
+        **settings.public_dict(),
+        "touch_interval_mode": _touch_interval_mode(),
+        "active_wechat_account_id": _active_wechat_account_id(),
+    }
+
+
+@app.post("/settings/touch-interval-mode")
+def set_touch_interval_mode(request: TouchIntervalModeRequest) -> dict[str, object]:
+    mode = request.mode.strip()
+    if mode not in {"test_ignore", "production"}:
+        raise HTTPException(status_code=400, detail="unsupported_touch_interval_mode")
+    store.set_runtime_setting("touch_interval_mode", mode)
+    return public_settings()
 
 
 @app.post("/auth/login")
@@ -224,6 +246,8 @@ def sync_contacts(request: ContactSyncRequest = ContactSyncRequest()) -> dict[st
         auto_confirm=request.auto_confirm,
         excluded=list(excluded),
     )
+    if account_id and account_id != "auto":
+        store.set_runtime_setting("active_wechat_account_id", account_id)
     return {
         "synced": len(saved),
         "excluded": len(excluded),
@@ -239,9 +263,33 @@ def sync_contacts(request: ContactSyncRequest = ContactSyncRequest()) -> dict[st
     }
 
 
+@app.post("/wechat/sync-wizard/start")
+def start_sync_wizard(request: SyncWizardStartRequest = SyncWizardStartRequest()) -> dict[str, object]:
+    return _sidecar_post(
+        "/wechat/sync-wizard/start",
+        {
+            "restart_wechat": request.restart_wechat,
+            "timeout_seconds": request.timeout_seconds,
+        },
+    )
+
+
+@app.get("/wechat/sync-wizard/status")
+def sync_wizard_status() -> dict[str, object]:
+    result = _sidecar_get("/wechat/sync-wizard/status")
+    _persist_sync_wizard_result(result)
+    return result
+
+
+@app.post("/wechat/sync-wizard/cancel")
+def cancel_sync_wizard() -> dict[str, object]:
+    return _sidecar_post("/wechat/sync-wizard/cancel", {})
+
+
 @app.get("/wechat/contacts")
 def contacts() -> list[dict[str, object]]:
-    return [contact.model_dump(mode="json") for contact in store.list_contacts()]
+    active_account_id = _active_wechat_account_id()
+    return [contact.model_dump(mode="json") for contact in store.list_contacts(account_id=active_account_id or None)]
 
 
 @app.post("/wechat/contacts/{contact_id}/confirm-touch")
@@ -372,12 +420,23 @@ def create_touch_plan(request: TouchPlanCreateRequest) -> AutomationPlan:
 
 @app.post("/touch/plans/{plan_id}/queue/build")
 def build_touch_queue(plan_id: str, request: TouchQueueBuildRequest) -> dict[str, object]:
-    planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
+    planner = TouchPlanner(
+        store,
+        touch_interval_days=settings.contact_touch_interval_days,
+        ignore_interval=_ignore_touch_interval(),
+    )
+    active_account_id = _active_wechat_account_id()
     contacts = store.list_contacts(
         limit=request.max_contacts,
         eligible_for_touch=True,
         confirmed_for_touch=True,
         source="wechat_local_contact_db",
+        account_id=active_account_id or None,
+    )
+    store.skip_plan_targets_not_in_contacts(
+        plan_id=plan_id,
+        contact_ids={contact.id for contact in contacts},
+        reason="inactive_wechat_account",
     )
     queued: list[dict[str, object]] = []
     for contact in contacts:
@@ -438,7 +497,11 @@ def run_touch_queue(plan_id: str, request: TouchQueueRunRequest) -> dict[str, ob
         profile = store.save_ai_profile(name="default", imported=prompt_loader.load(settings.prompt_docx_path))
     system_prompt = profile["system_prompt"] if profile else "你是专业销售顾问，回复要简洁自然。"
     knowledge = "\n".join(f"问题：{item['question']}\n答案：{item['answer']}" for item in (profile or {}).get("knowledge_base", []))
-    planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
+    planner = TouchPlanner(
+        store,
+        touch_interval_days=settings.contact_touch_interval_days,
+        ignore_interval=_ignore_touch_interval(),
+    )
 
     results: list[dict[str, object]] = []
     for row in rows:
@@ -524,12 +587,18 @@ def run_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
         }
     effective_limit = min(request.limit, max_batch_size)
 
-    planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
+    planner = TouchPlanner(
+        store,
+        touch_interval_days=settings.contact_touch_interval_days,
+        ignore_interval=_ignore_touch_interval(),
+    )
+    active_account_id = _active_wechat_account_id()
     contacts = store.list_contacts(
         limit=effective_limit,
         eligible_for_touch=True,
         confirmed_for_touch=True,
         source="wechat_local_contact_db",
+        account_id=active_account_id or None,
     )
     if not contacts:
         return {"plan_id": plan_id, "ran": 0, "results": [], "message": "请先确认客户"}
@@ -579,12 +648,18 @@ def run_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
 
 @app.post("/touch/plans/{plan_id}/preview")
 def preview_touch_plan(plan_id: str, request: TouchRunRequest) -> dict[str, object]:
-    planner = TouchPlanner(store, touch_interval_days=settings.contact_touch_interval_days)
+    planner = TouchPlanner(
+        store,
+        touch_interval_days=settings.contact_touch_interval_days,
+        ignore_interval=_ignore_touch_interval(),
+    )
+    active_account_id = _active_wechat_account_id()
     contacts = store.list_contacts(
         limit=request.limit,
         eligible_for_touch=True,
         confirmed_for_touch=True,
         source="wechat_local_contact_db",
+        account_id=active_account_id or None,
     )
     preview: list[dict[str, object]] = []
     for contact in contacts[: request.limit]:
@@ -867,6 +942,42 @@ async def ws_tasks(websocket: WebSocket) -> None:
     await websocket.accept()
     await websocket.send_json({"type": "snapshot", "events": [event.model_dump(mode="json") for event in store.list_task_events(limit=50)]})
     await websocket.close()
+
+
+def _touch_interval_mode() -> str:
+    mode = store.get_runtime_setting("touch_interval_mode", settings.touch_interval_mode)
+    return mode if mode in {"test_ignore", "production"} else "production"
+
+
+def _ignore_touch_interval() -> bool:
+    return _touch_interval_mode() == "test_ignore"
+
+
+def _active_wechat_account_id() -> str:
+    return store.get_runtime_setting("active_wechat_account_id", "")
+
+
+def _persist_sync_wizard_result(result: dict[str, object]) -> None:
+    if result.get("stage") != "completed":
+        return
+    sync_result = result.get("sync_result") if isinstance(result.get("sync_result"), dict) else {}
+    if not isinstance(sync_result, dict):
+        return
+    account_id = str(sync_result.get("account_id") or result.get("account_id") or "").strip()
+    if not account_id:
+        return
+    contacts = sync_result.get("contacts") or []
+    excluded = sync_result.get("excluded") or []
+    if not contacts and not excluded:
+        return
+    saved = store.upsert_synced_contacts(
+        account_id=account_id,
+        contacts=list(contacts),
+        auto_confirm=True,
+        excluded=list(excluded),
+    )
+    store.set_runtime_setting("active_wechat_account_id", account_id)
+    result["synced"] = len(saved)
 
 
 def _sidecar_get(path: str) -> dict[str, object]:

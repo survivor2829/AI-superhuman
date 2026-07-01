@@ -137,3 +137,46 @@ def test_weclaw_and_clawbot_entries_are_excluded_from_touch(tmp_path):
     assert bot.eligibility_reason == "non_human_ai_entry"
     assert real.eligible_for_touch is True
     assert [contact.wxid for contact in confirmed] == ["wxid_real_customer"]
+
+
+def test_active_wechat_account_filters_customer_pool(tmp_path):
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    store.upsert_synced_contacts(
+        account_id="wxid_old",
+        contacts=[
+            {
+                "wxid": "wxid_old_customer",
+                "nickname": "旧号客户",
+                "source": "wechat_local_contact_db",
+                "local_type": 1,
+                "contact_flag": 1,
+                "delete_flag": 0,
+            }
+        ],
+        auto_confirm=True,
+    )
+    store.upsert_synced_contacts(
+        account_id="wxid_new",
+        contacts=[
+            {
+                "wxid": "wxid_new_customer",
+                "nickname": "新号客户",
+                "source": "wechat_local_contact_db",
+                "local_type": 1,
+                "contact_flag": 1,
+                "delete_flag": 0,
+            }
+        ],
+        auto_confirm=True,
+    )
+    store.set_runtime_setting("active_wechat_account_id", "wxid_new")
+
+    confirmed = store.list_contacts(
+        eligible_for_touch=True,
+        confirmed_for_touch=True,
+        source="wechat_local_contact_db",
+        account_id=store.get_runtime_setting("active_wechat_account_id"),
+    )
+
+    assert [contact.nickname for contact in confirmed] == ["新号客户"]

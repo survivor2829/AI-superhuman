@@ -14,11 +14,14 @@ class TouchDecision:
 
 
 class TouchPlanner:
-    def __init__(self, store: AgentStore, *, touch_interval_days: int) -> None:
+    def __init__(self, store: AgentStore, *, touch_interval_days: int, ignore_interval: bool = False) -> None:
         self.store = store
         self.touch_interval_days = touch_interval_days
+        self.ignore_interval = ignore_interval
 
     def evaluate(self, *, plan_id: str, contact_id: str, now: datetime | None = None) -> TouchDecision:
+        if self.ignore_interval:
+            return TouchDecision(allowed=True, reason="test_mode_allowed")
         current = now or datetime.now(UTC)
         target = self.store.get_plan_target(plan_id=plan_id, contact_id=contact_id)
         if target is None or target["last_touched_at"] is None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.services.guardrails import LocalAction, LocalActionResult
+from app.services.sync_wizard import SyncWizard
 from app.services.weixin_driver import RealAutomationDriver, build_controlled_screen_send_driver_probe
 
 
@@ -45,6 +46,11 @@ class WeixinAutomationDriver:
         self.real_driver = real_driver
         self.dry_run = dry_run
         self.dry_driver = DryRunAutomationDriver(account_id="wxid_test_001")
+        self.sync_wizard = SyncWizard(
+            restart_wechat=self._restart_wechat_for_sync,
+            login_probe=self.probe,
+            sync_contacts=self.sync_contacts,
+        )
 
     def status(self) -> dict[str, object]:
         if self.dry_run:
@@ -151,6 +157,20 @@ class WeixinAutomationDriver:
                 "counts": {"contacts": 0, "excluded": 0},
             }
         return self.real_driver.sync_contacts(account_id=account_id, auto_decrypt=auto_decrypt)
+
+    def start_sync_wizard(self, *, restart_wechat: bool = True, timeout_seconds: int = 180) -> dict[str, object]:
+        return self.sync_wizard.start(restart_wechat=restart_wechat, timeout_seconds=timeout_seconds)
+
+    def sync_wizard_status(self) -> dict[str, object]:
+        return self.sync_wizard.status()
+
+    def cancel_sync_wizard(self) -> dict[str, object]:
+        return self.sync_wizard.cancel()
+
+    def _restart_wechat_for_sync(self) -> dict[str, object]:
+        if self.dry_run:
+            return {"success": True, "message": "dry_run_wechat_restarted"}
+        return self.real_driver.restart_wechat()
 
     def execute(self, action: LocalAction) -> LocalActionResult:
         if self.dry_run:

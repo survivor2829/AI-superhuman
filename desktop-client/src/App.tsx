@@ -19,7 +19,7 @@ import {
   UsersRound
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AuditLog, AutoReplyItem, Contact, CurrentTaskStatus, EvidenceFile, Health, MomentsFeedItem, PromptImportResponse, SendDriverProbe, Settings, TaskEvent, TaskRun, TouchPreview, TouchQueueResponse, WindowProbe } from "./lib/api";
+import { api, AuditLog, AutoReplyItem, Contact, CurrentTaskStatus, EvidenceFile, Health, MomentsFeedItem, PromptImportResponse, SendDriverProbe, Settings, SyncWizardStatus, TaskEvent, TaskRun, TouchPreview, TouchQueueResponse, WindowProbe } from "./lib/api";
 
 type ViewId = "home" | "prompt" | "contacts" | "send" | "reply" | "moments" | "results" | "settings";
 type ServiceState = "online" | "offline" | "checking";
@@ -118,6 +118,8 @@ function MiniStatus({ ok, text }: { ok: boolean; text: string }) {
   return <span className={`status ${ok ? "status-online" : "status-checking"}`}>{text}</span>;
 }
 
+const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
 export function App() {
   const [activeView, setActiveView] = useState<ViewId>("home");
   const [appHealth, setAppHealth] = useState<Health | null>(null);
@@ -140,6 +142,7 @@ export function App() {
   const [touchQueue, setTouchQueue] = useState<TouchQueueResponse | null>(null);
   const [autoReplies, setAutoReplies] = useState<AutoReplyItem[]>([]);
   const [momentsItems, setMomentsItems] = useState<MomentsFeedItem[]>([]);
+  const [syncWizard, setSyncWizard] = useState<SyncWizardStatus | null>(null);
   const [planId, setPlanId] = useState<string | null>(null);
   const promptFileInput = useRef<HTMLInputElement>(null);
 
@@ -201,11 +204,30 @@ export function App() {
   };
 
   const syncContacts = async () => runAction("sync-contacts", async () => {
-    setNotice("正在静默同步本机微信通讯录...");
-    const result = await api.syncContacts();
-    setNotice(`同步到 ${result.friend_count || result.synced} 个微信好友，排除 ${result.group_member_excluded || 0} 个群聊成员、${result.system_excluded || 0} 个系统项`);
+    setNotice("正在启动通讯录同步：会重启微信，请完成登录确认...");
+    setActiveView("home");
+    const started = await api.startSyncWizard();
+    setSyncWizard(started);
+    for (let index = 0; index < 190; index += 1) {
+      await delay(1000);
+      const status = await api.syncWizardStatus();
+      setSyncWizard(status);
+      setNotice(`${status.stage_label}：${status.message}`);
+      if (status.stage === "completed") {
+        setNotice(`同步完成：${status.friend_count || status.synced || 0} 个微信好友，排除 ${status.excluded_count || 0} 个非客户项`);
+        await refresh();
+        setActiveView("contacts");
+        return;
+      }
+      if (status.stage === "failed" || status.stage === "cancelled") {
+        setNotice(`同步未完成：${status.message || labelReason(status.error_reason)}`);
+        await refresh();
+        setActiveView("contacts");
+        return;
+      }
+    }
+    setNotice("同步等待超时：请确认微信是否已经登录，再重新点击静默同步通讯录");
     await refresh();
-    setActiveView("contacts");
   });
 
   const calibrateWechatWindow = async () => runAction("calibrate-driver", async () => {
@@ -440,6 +462,14 @@ export function App() {
     await refresh();
   });
 
+  const switchTouchIntervalMode = async () => runAction("switch-touch-mode", async () => {
+    const nextMode = settings?.touch_interval_mode === "test_ignore" ? "production" : "test_ignore";
+    const updated = await api.setTouchIntervalMode(nextMode);
+    setSettings(updated);
+    setNotice(nextMode === "test_ignore" ? "已切到测试模式：本机验收可重复发送" : "已切到正式模式：同一客户 15 天内不重复触达");
+    await refresh();
+  });
+
   const runSmallBatchLegacy = async () => runAction("run-small-batch-legacy", async () => {
     if (touchableContacts.length === 0) {
       setNotice("请先静默同步通讯录，或检查是否已全部移除");
@@ -516,6 +546,7 @@ export function App() {
   const sendCalibrated = sendDriverProbe?.calibrated === true;
   const sendBlockedMessage = sendDriverProbe?.message || "请先校准微信窗口，未执行发送";
   const sendDriverCandidates = sendDriverProbe?.candidates || [];
+  const touchIntervalModeLabel = settings?.touch_interval_mode === "test_ignore" ? "测试模式：允许重复验收" : "正式模式：15 天不重复触达";
 
   const steps = CUSTOMER_STEPS.map((step) => {
     if (step === "连接微信") return { label: step, done: serviceReady && wechatReady };
@@ -585,6 +616,23 @@ export function App() {
           <button className="danger-button" onClick={() => void startCustomerSendFlow()} disabled={busyAction !== null || touchableContacts.length === 0}><Send size={16} />开始发送</button>
           <span className="notice">{notice}</span>
         </section>
+
+        {syncWizard && syncWizard.stage !== "idle" && (
+          <section className="panel sync-wizard-panel">
+            <div className="panel-title">
+              <h2>通讯录同步进度</h2>
+              <MiniStatus ok={syncWizard.stage === "completed"} text={syncWizard.stage_label} />
+            </div>
+            <div className="readiness-list">
+              <div className={`readiness-item ${["restarting_wechat", "waiting_login", "syncing_contacts", "completed"].includes(syncWizard.stage) ? "step-done" : ""}`}><CheckCircle2 size={18} /><span>重启微信</span></div>
+              <div className={`readiness-item ${["waiting_login", "syncing_contacts", "completed"].includes(syncWizard.stage) ? "step-done" : ""}`}><CheckCircle2 size={18} /><span>等待登录</span></div>
+              <div className={`readiness-item ${["syncing_contacts", "completed"].includes(syncWizard.stage) ? "step-done" : ""}`}><CheckCircle2 size={18} /><span>读取通讯录</span></div>
+              <div className={`readiness-item ${syncWizard.stage === "completed" ? "step-done" : ""}`}><CheckCircle2 size={18} /><span>写入客户池</span></div>
+            </div>
+            <p className="plain-copy">{syncWizard.message}</p>
+            {syncWizard.stage === "completed" && <p className="muted">当前账号：{syncWizard.account_id || syncWizard.sync_result?.account_id || "-"}，同步到 {syncWizard.friend_count || syncWizard.synced || 0} 个微信好友。</p>}
+          </section>
+        )}
 
         {activeView === "home" && (
           <section className="panel">
@@ -825,8 +873,14 @@ export function App() {
               <div className="panel-title"><h2>护栏设置</h2></div>
               <div className="summary-box">
                 <span>触达间隔</span><strong>{settings ? `${settings.contact_touch_interval_days} 天` : "-"}</strong>
+                <span>当前模式</span><strong>{touchIntervalModeLabel}</strong>
                 <span>消息前缀</span><strong>{settings?.rpa_send_prefix || "-"}</strong>
                 <span>发送策略</span><strong>{canAutoSend ? "受控窗口小批量" : sendCalibrated ? "单人验证" : "未校准不发送"}</strong>
+              </div>
+              <div className="button-row">
+                <button className="primary-button" onClick={() => void switchTouchIntervalMode()} disabled={busyAction !== null}>
+                  {settings?.touch_interval_mode === "test_ignore" ? "切回正式 15 天规则" : "切到测试可重复发送"}
+                </button>
               </div>
             </div>
             <details className="panel diagnostics">

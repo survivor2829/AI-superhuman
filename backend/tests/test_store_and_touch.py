@@ -62,3 +62,17 @@ def test_touch_planner_allows_contact_outside_interval(tmp_path):
 
     assert decision.allowed is True
     assert decision.reason == "allowed"
+
+
+def test_touch_planner_test_mode_ignores_recent_touch(tmp_path):
+    store = AgentStore(f"sqlite:///{tmp_path / 'agent.db'}")
+    store.create_schema()
+    plan = store.upsert_plan(plan_type="touch", name="小批量触达")
+    contact = store.upsert_contact(account_id="wxid_test_001", wxid="wxid_contact_003", nickname="测试客户3")
+    now = datetime(2026, 6, 29, 12, 0, tzinfo=UTC)
+    store.mark_contact_touched(plan_id=plan.id, contact_id=contact.id, touched_at=now - timedelta(minutes=5))
+
+    decision = TouchPlanner(store, touch_interval_days=15, ignore_interval=True).evaluate(plan_id=plan.id, contact_id=contact.id, now=now)
+
+    assert decision.allowed is True
+    assert decision.reason == "test_mode_allowed"

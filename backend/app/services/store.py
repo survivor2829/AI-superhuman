@@ -68,6 +68,13 @@ class MessageRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
+class RuntimeSettingRow(Base):
+    __tablename__ = "runtime_settings"
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
 class AutoReplyQueueRow(Base):
     __tablename__ = "auto_reply_queue"
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -347,6 +354,7 @@ class AgentStore:
         eligible_for_touch: bool | None = None,
         confirmed_for_touch: bool | None = None,
         source: str | None = None,
+        account_id: str | None = None,
     ) -> list[Contact]:
         with self.SessionLocal() as session:
             query = select(ContactRow).order_by(ContactRow.created_at.asc()).limit(limit)
@@ -356,8 +364,25 @@ class AgentStore:
                 query = query.where(ContactRow.confirmed_for_touch == (1 if confirmed_for_touch else 0))
             if source is not None:
                 query = query.where(ContactRow.source == source)
+            if account_id:
+                query = query.where(ContactRow.account_id == account_id)
             rows = session.scalars(query).all()
             return [self._contact(row) for row in rows]
+
+    def set_runtime_setting(self, key: str, value: str) -> None:
+        with self.SessionLocal() as session:
+            row = session.get(RuntimeSettingRow, key)
+            if row is None:
+                row = RuntimeSettingRow(key=key)
+                session.add(row)
+            row.value = value
+            row.updated_at = datetime.now(UTC)
+            session.commit()
+
+    def get_runtime_setting(self, key: str, default: str = "") -> str:
+        with self.SessionLocal() as session:
+            row = session.get(RuntimeSettingRow, key)
+            return row.value if row is not None else default
 
     def get_contact(self, contact_id: str) -> Contact | None:
         with self.SessionLocal() as session:
@@ -668,6 +693,25 @@ class AgentStore:
             if rows:
                 session.commit()
             return len(rows)
+
+    def skip_plan_targets_not_in_contacts(self, *, plan_id: str, contact_ids: set[str], reason: str) -> int:
+        with self.SessionLocal() as session:
+            rows = session.scalars(
+                select(PlanTargetRow).where(
+                    PlanTargetRow.plan_id == plan_id,
+                    PlanTargetRow.status.in_(["pending", "retry", "running"]),
+                )
+            ).all()
+            changed = 0
+            for row in rows:
+                if row.contact_id in contact_ids:
+                    continue
+                row.status = "skipped"
+                row.skip_reason = reason
+                changed += 1
+            if changed:
+                session.commit()
+            return changed
 
     def cleanup_corrupt_plan_names(self) -> None:
         with self.SessionLocal() as session:

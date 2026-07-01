@@ -71,6 +71,11 @@ def test_run_touch_queue_sends_pending_targets_and_marks_sent(monkeypatch, tmp_p
     _save_profile(store)
     monkeypatch.setattr(main, "store", store)
     monkeypatch.setattr(main, "llm", FakeLLM())
+    monkeypatch.setattr(
+        main,
+        "send_driver_probe",
+        lambda: {"mode": "controlled_screen", "verified": True, "calibrated": True, "max_batch_size": 3},
+    )
     contact = store.upsert_contact(
         account_id="wxid_local",
         wxid="wxid_1",
@@ -114,6 +119,11 @@ def test_run_touch_queue_skips_stale_non_human_entries_before_sending(monkeypatc
     _save_profile(store)
     monkeypatch.setattr(main, "store", store)
     monkeypatch.setattr(main, "llm", FakeLLM())
+    monkeypatch.setattr(
+        main,
+        "send_driver_probe",
+        lambda: {"mode": "controlled_screen", "verified": True, "calibrated": True, "max_batch_size": 3},
+    )
     contact = store.upsert_synced_contacts(
         account_id="wxid_local",
         contacts=[
